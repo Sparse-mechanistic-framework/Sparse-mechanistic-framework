@@ -1,0 +1,553 @@
+[
+  {
+    "name": "L4_activation_circuit",
+    "layers": [
+      4
+    ],
+    "components": [
+      "layer_4_attention"
+    ],
+    "importance_score": 102.9910888671875,
+    "function_description": "Layer 4 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "doc_tokens": [
+      10,
+      11,
+      12,
+      17,
+      18
+    ]
+  },
+  {
+    "name": "L3_activation_circuit",
+    "layers": [
+      3
+    ],
+    "components": [
+      "layer_3_attention"
+    ],
+    "importance_score": 94.45143127441406,
+    "function_description": "Layer 3 activation pattern",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  {
+    "name": "L5_activation_circuit",
+    "layers": [
+      5
+    ],
+    "components": [
+      "layer_5_attention"
+    ],
+    "importance_score": 93.33589172363281,
+    "function_description": "Layer 5 activation pattern",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  {
+    "name": "L6_activation_circuit",
+    "layers": [
+      6
+    ],
+    "components": [
+      "layer_6_attention"
+    ],
+    "importance_score": 92.06539916992188,
+    "function_description": "Layer 6 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      10,
+      11,
+      12,
+      16,
+      17
+    ]
+  },
+  {
+    "name": "L7_activation_circuit",
+    "layers": [
+      7
+    ],
+    "components": [
+      "layer_7_attention"
+    ],
+    "importance_score": 90.29078674316406,
+    "function_description": "Layer 7 activation pattern",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  {
+    "name": "L8_activation_circuit",
+    "layers": [
+      8
+    ],
+    "components": [
+      "layer_8_attention"
+    ],
+    "importance_score": 86.20840454101562,
+    "function_description": "Layer 8 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      16
+    ],
+    "doc_tokens": [
+      8,
+      9,
+      10,
+      11,
+      12
+    ]
+  },
+  {
+    "name": "L1_activation_circuit",
+    "layers": [
+      1
+    ],
+    "components": [
+      "layer_1_attention"
+    ],
+    "importance_score": 66.39945220947266,
+    "function_description": "Layer 1 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      9,
+      10,
+      12,
+      14,
+      16
+    ]
+  },
+  {
+    "name": "L0_activation_circuit",
+    "layers": [
+      0
+    ],
+    "components": [
+      "layer_0_attention"
+    ],
+    "importance_score": 64.75702667236328,
+    "function_description": "Layer 0 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      18,
+      37
+    ],
+    "doc_tokens": [
+      4,
+      7,
+      8,
+      9,
+      10
+    ]
+  },
+  {
+    "name": "L9_activation_circuit",
+    "layers": [
+      9
+    ],
+    "components": [
+      "layer_9_attention"
+    ],
+    "importance_score": 56.62250900268555,
+    "function_description": "Layer 9 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      13,
+      14,
+      15,
+      16,
+      17
+    ]
+  },
+  {
+    "name": "L10_activation_circuit",
+    "layers": [
+      10
+    ],
+    "components": [
+      "layer_10_attention"
+    ],
+    "importance_score": 54.565303802490234,
+    "function_description": "Layer 10 activation pattern",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      4,
+      5,
+      6,
+      7
+    ]
+  },
+  {
+    "name": "L2_activation_circuit",
+    "layers": [
+      2
+    ],
+    "components": [
+      "layer_2_attention"
+    ],
+    "importance_score": 53.20515441894531,
+    "function_description": "Layer 2 activation pattern",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      9,
+      10,
+      12,
+      14,
+      16
+    ]
+  },
+  {
+    "name": "L11_activation_circuit",
+    "layers": [
+      11
+    ],
+    "components": [
+      "layer_11_attention"
+    ],
+    "importance_score": 39.86517333984375,
+    "function_description": "Layer 11 activation pattern",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L10_mlp_circuit",
+    "layers": [
+      10
+    ],
+    "components": [
+      "layer_10_mlp"
+    ],
+    "importance_score": 29.49570655822754,
+    "function_description": "MLP processing in layer 10",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L9_mlp_circuit",
+    "layers": [
+      9
+    ],
+    "components": [
+      "layer_9_mlp"
+    ],
+    "importance_score": 25.524995803833008,
+    "function_description": "MLP processing in layer 9",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L8_mlp_circuit",
+    "layers": [
+      8
+    ],
+    "components": [
+      "layer_8_mlp"
+    ],
+    "importance_score": 23.360265731811523,
+    "function_description": "MLP processing in layer 8",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L7_mlp_circuit",
+    "layers": [
+      7
+    ],
+    "components": [
+      "layer_7_mlp"
+    ],
+    "importance_score": 18.517929077148438,
+    "function_description": "MLP processing in layer 7",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L2_mlp_circuit",
+    "layers": [
+      2
+    ],
+    "components": [
+      "layer_2_mlp"
+    ],
+    "importance_score": 14.893875122070312,
+    "function_description": "MLP processing in layer 2",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      9
+    ]
+  },
+  {
+    "name": "L6_mlp_circuit",
+    "layers": [
+      6
+    ],
+    "components": [
+      "layer_6_mlp"
+    ],
+    "importance_score": 14.55459976196289,
+    "function_description": "MLP processing in layer 6",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      4,
+      5,
+      8,
+      9
+    ]
+  },
+  {
+    "name": "L5_mlp_circuit",
+    "layers": [
+      5
+    ],
+    "components": [
+      "layer_5_mlp"
+    ],
+    "importance_score": 14.353126525878906,
+    "function_description": "MLP processing in layer 5",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      4,
+      5,
+      8,
+      9
+    ]
+  },
+  {
+    "name": "L4_mlp_circuit",
+    "layers": [
+      4
+    ],
+    "components": [
+      "layer_4_mlp"
+    ],
+    "importance_score": 14.235525131225586,
+    "function_description": "MLP processing in layer 4",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      6,
+      15,
+      16,
+      18,
+      20
+    ]
+  },
+  {
+    "name": "L3_mlp_circuit",
+    "layers": [
+      3
+    ],
+    "components": [
+      "layer_3_mlp"
+    ],
+    "importance_score": 13.10250186920166,
+    "function_description": "MLP processing in layer 3",
+    "query_tokens": [
+      1
+    ],
+    "doc_tokens": [
+      3,
+      5,
+      6,
+      7,
+      9
+    ]
+  },
+  {
+    "name": "L1_mlp_circuit",
+    "layers": [
+      1
+    ],
+    "components": [
+      "layer_1_mlp"
+    ],
+    "importance_score": 11.289108276367188,
+    "function_description": "MLP processing in layer 1",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      9,
+      10,
+      12,
+      14,
+      16
+    ]
+  },
+  {
+    "name": "L11_mlp_circuit",
+    "layers": [
+      11
+    ],
+    "components": [
+      "layer_11_mlp"
+    ],
+    "importance_score": 9.940019607543945,
+    "function_description": "MLP processing in layer 11",
+    "query_tokens": [
+      1,
+      2
+    ],
+    "doc_tokens": [
+      4,
+      5,
+      6,
+      7,
+      11
+    ]
+  },
+  {
+    "name": "L0_mlp_circuit",
+    "layers": [
+      0
+    ],
+    "components": [
+      "layer_0_mlp"
+    ],
+    "importance_score": 9.786742210388184,
+    "function_description": "MLP processing in layer 0",
+    "query_tokens": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "doc_tokens": [
+      9,
+      10,
+      12,
+      14,
+      16
+    ]
+  }
+]
