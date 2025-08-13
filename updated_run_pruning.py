@@ -281,8 +281,8 @@ def main():
         'batch_size': 16,
         'learning_rate': 5e-5,  # Higher for pruning recovery
         'warmup_ratio': 0.1,
-        'output_dir': Path('./phase2_results'),
-        'phase1_dir': Path('./phase1_results'),
+        'output_dir': Path('./kaggle/working/Sparse-mechanistic-framework/phase2_results'),
+        'phase1_dir': Path('./kaggle/working/Sparse-mechanistic-framework/phase1_results'),
         'use_distillation': True,
         'pruning_method': 'hybrid'  # Use hybrid approach
     }
