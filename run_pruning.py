@@ -700,7 +700,7 @@ def main():
                     initial_sparsity=0.0,
                     final_sparsity=target_sparsity,
                     pruning_steps=110,
-                    pruning_frequency=max(1, len(train_loader) // 80,  # gradual schedule; increase for gentler pruning# t
+                    pruning_frequency=max(1, len(train_loader) // 80),  # gradual schedule; increase for gentler pruning# t
                     pruning_method=config['pruning_method'],
                     learning_rate=config['learning_rate'],
                     warmup_steps=int(len(train_loader) * config['warmup_ratio']),
@@ -994,3 +994,4 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
