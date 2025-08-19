@@ -479,7 +479,7 @@ def main():
             'phase1_dir': Path('./phase1_results'),
             'use_distillation': True,  # Disable to save memory
             'pruning_method': 'magnitude',
-            'max_samples': 7000,  # Increase dataset size for 4 GPUs
+            'max_samples': 4500,  # Increase dataset size for 4 GPUs
             'baseline_epochs': 3,
             'gradient_accumulation_steps': 2,  # Simulate larger batch
             'fp16': True,  # Enable mixed precision
@@ -994,4 +994,5 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
 
