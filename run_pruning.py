@@ -31,13 +31,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import the advanced pruning module
-from advanced_pruning_implementation import (
+from advanced_implementation import (
     PruningConfig, 
     AdvancedPruningModule, 
     PruningTrainer,
     calculate_actual_sparsity
 )
-from pruning_fix_validation import (
+from fix_validation import (
     MaskedAdam,
     VerifiedPruningModule,
     validate_pruning_results
@@ -471,7 +471,7 @@ def main():
             'model_name': 'bert-base-uncased',
             'device': f'cuda:{local_rank}',
             'target_sparsities': [0.3, 0.5, 0.7],
-            'num_epochs': 3,
+            'num_epochs': 4,
             'batch_size': 4,  # Per-GPU batch size (total = 4 * 4 = 16)
             'learning_rate': 2e-5,
             'warmup_ratio': 0.05,
@@ -479,8 +479,8 @@ def main():
             'phase1_dir': Path('./phase1_results'),
             'use_distillation': True,  # Disable to save memory
             'pruning_method': 'magnitude',
-            'max_samples': 7800,  # Increase dataset size for 4 GPUs
-            'baseline_epochs': 2,
+            'max_samples': 7000,  # Increase dataset size for 4 GPUs
+            'baseline_epochs': 3,
             'gradient_accumulation_steps': 2,  # Simulate larger batch
             'fp16': True,  # Enable mixed precision
             'num_workers': 2,  # DataLoader workers per GPU
@@ -629,7 +629,7 @@ def main():
             progress_bar = tqdm(train_loader, desc=f"Training Baseline Epoch {epoch+1}", disable=rank != 0)
             
             for batch_idx, batch in enumerate(progress_bar):
-                if batch_idx >= 180:  # Limited baseline training
+                if batch_idx >= 300:  # Limited baseline training
                     break
                 
                 batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
@@ -699,16 +699,16 @@ def main():
                 pruning_config = PruningConfig(
                     initial_sparsity=0.0,
                     final_sparsity=target_sparsity,
-                    pruning_steps=120,
-                    pruning_frequency=max(1, len(train_loader) // 80),  # gradual schedule; increase for gentler pruning# t
+                    pruning_steps=110,
+                    pruning_frequency=max(1, len(train_loader) // 80,  # gradual schedule; increase for gentler pruning# t
                     pruning_method=config['pruning_method'],
                     learning_rate=config['learning_rate'],
                     warmup_steps=int(len(train_loader) * config['warmup_ratio']),
                     use_distillation=config['use_distillation'],
                     distillation_alpha=0.5,
-                    temperature=6.7,
+                    temperature=6.0,
                     circuit_preservation_weight=2.0,
-                    protect_critical_layers=[2, 3, 4, 5, 6, 7],
+                    protect_critical_layers=[1, 2, 3, 4, 5, 6, 7, 8],
                     gradient_accumulation_steps=config['gradient_accumulation_steps'],
                     memory_efficient=True
                 )
@@ -992,4 +992,5 @@ def main():
         cleanup_distributed()  
 
 if __name__ == "__main__":
+
     main() 
