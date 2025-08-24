@@ -953,4 +953,166 @@ def main():
                             
                             pruning_module.enforce_masks()
                         
-                        if
+                        if rank == 0:
+                           current_sparsity = pruning_module.verify_sparsity()
+                           progress_bar.set_postfix({
+                               'loss': f"{total_loss.item():.4f}",
+                               'sparsity': f"{current_sparsity:.1%}",
+                               'lr': f"{scheduler.get_last_lr()[0]:.2e}"
+                           })
+                   
+                    # Evaluation
+                    eval_metrics = evaluate_model_distributed(
+                        model, eval_loader, config['device'], local_rank
+                    )
+                    
+                    if is_main_process():
+                        logger.info(f"Epoch {epoch + 1} - Eval: "
+                                    f"Loss: {eval_metrics['loss']:.4f}, "
+                                    f"Correlation: {eval_metrics['correlation']:.4f}, "
+                                    f"Sparsity: {pruning_module.verify_sparsity():.1%}")
+                        
+                        # Save best model
+                        if eval_metrics['correlation'] > best_score:
+                            best_score = eval_metrics['correlation']
+                            model_to_save = model.module if hasattr(model, 'module') else model
+                            best_model_state = copy.deepcopy(model_to_save.state_dict())
+                
+                # Final evaluation
+                if is_main_process():
+                    logger.info("Final evaluation...")
+                
+                final_metrics = evaluate_model_distributed(
+                    model, eval_loader, config['device'], local_rank
+                )
+                
+                if is_main_process():
+                    # Restore best model
+                    if best_model_state:
+                        model_to_load = model.module if hasattr(model, 'module') else model
+                        model_to_load.load_state_dict(best_model_state)
+                    
+                    # Calculate actual sparsity
+                    model_for_sparsity = model.module if hasattr(model, 'module') else model
+                    actual_sparsity = calculate_actual_sparsity(model_for_sparsity)
+                    
+                    # Calculate retention
+                    retention = final_metrics['correlation'] / max(baseline_metrics['correlation'], 0.001)
+                    retention = min(retention, 1.0)
+                    
+                    # Store results
+                    experiment_results = {
+                        'target_sparsity': target_sparsity,
+                        'actual_sparsity': actual_sparsity,
+                        'baseline_correlation': baseline_metrics['correlation'],
+                        'pruned_correlation': final_metrics['correlation'],
+                        'metrics_before': baseline_metrics,
+                        'metrics_after': final_metrics,
+                        'retention': retention,
+                        'best_score': best_score,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    
+                    all_results['experiments'][f'sparsity_{target_sparsity}'] = experiment_results
+                    
+                    # Save model
+                    model_path = config['output_dir'] / 'models' / f'pruned_{int(target_sparsity*100)}.pt'
+                    model_to_save = model.module if hasattr(model, 'module') else model
+                    
+                    # Create pruning config dict
+                    pruning_config_dict = {
+                        'target_sparsity': target_sparsity,
+                        'pruning_method': config['pruning_method'],
+                        'learning_rate': config['learning_rate'],
+                        'num_epochs': config['num_epochs']
+                    }
+                    
+                    torch.save({
+                        'model_state': model_to_save.state_dict(),
+                        'config': pruning_config_dict,
+                        'metrics': final_metrics,
+                        'actual_sparsity': actual_sparsity
+                    }, model_path)
+                    
+                    # Log results
+                    logger.info(f"\nResults for {target_sparsity:.0%} sparsity:")
+                    logger.info(f"  Baseline correlation: {baseline_metrics['correlation']:.4f}")
+                    logger.info(f"  Pruned correlation: {final_metrics['correlation']:.4f}")
+                    logger.info(f"  Actual sparsity: {actual_sparsity:.2%}")
+                    logger.info(f"  MSE: {final_metrics['mse']:.4f}")
+                    logger.info(f"  Retention: {retention:.2%}")
+                    logger.info(f"  Model saved to: {model_path}")
+                
+                # Clean up
+                del model
+                del pruning_module
+                if teacher_model:
+                    del teacher_model
+                torch.cuda.empty_cache()
+                
+                # Synchronize before next experiment
+                if dist.is_initialized():
+                    dist.barrier()
+                
+            except Exception as e:
+                if is_main_process():
+                    logger.error(f"Experiment failed for {target_sparsity:.0%} sparsity:")
+                    logger.error(str(e))
+                    logger.error(traceback.format_exc())
+                
+                # Ensure cleanup even on error
+                try:
+                    del model
+                except:
+                    pass
+                try:
+                    del pruning_module
+                except:
+                    pass
+                try:
+                    del teacher_model
+                except:
+                    pass
+                torch.cuda.empty_cache()
+                
+                continue
+        
+        # Save all results (only on main process)
+        if is_main_process():
+            results_path = config['output_dir'] / 'metrics' / 'pruning_results.json'
+            with open(results_path, 'w') as f:
+                json.dump(all_results, f, indent=2, default=str)
+            
+            # Print summary
+            logger.info("\n" + "="*60)
+            logger.info("PRUNING EXPERIMENTS COMPLETE")
+            logger.info("="*60)
+            
+            logger.info("\nSummary of Results:")
+            logger.info(f"{'Sparsity':<12} {'Actual':<12} {'Baseline':<12} {'Pruned':<12} {'Retention':<12}")
+            logger.info("-" * 60)
+            
+            for exp_name, exp_data in all_results['experiments'].items():
+                logger.info(
+                    f"{exp_data['target_sparsity']:<12.0%} "
+                    f"{exp_data['actual_sparsity']:<12.2%} "
+                    f"{exp_data['baseline_correlation']:<12.4f} "
+                    f"{exp_data['pruned_correlation']:<12.4f} "
+                    f"{exp_data['retention']:<12.2%}"
+                )
+            
+            logger.info(f"\nResults saved to: {results_path}")
+        
+    except Exception as e:
+        if is_main_process():
+            logger.critical(f"Critical error in main execution:")
+            logger.critical(str(e))
+            logger.critical(traceback.format_exc())
+    
+    finally:
+        # Clean up distributed training
+        cleanup_distributed()
+
+
+if __name__ == "__main__":
+   main()
