@@ -447,16 +447,7 @@ class NFCorpusDataset(Dataset):
                 )
             
             logger.info(f"\nResults saved to: {results_path}")
-        
-    except Exception as e:
-        if is_main_process():
-            logger.critical(f"Critical error in main execution:")
-            logger.critical(str(e))
-            logger.critical(traceback.format_exc())
-    
-    finally:
-        # Clean up distributed training
-        cleanup_distributed()
+
 
 
 if __name__ == "__main__":
