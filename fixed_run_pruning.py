@@ -711,7 +711,7 @@ def main():
                 progress_bar = tqdm(train_loader, desc=f"Training Baseline Epoch {epoch+1}", disable=rank != 0)
                 
                 for batch_idx, batch in enumerate(progress_bar):
-                    if batch_idx >= 300:  # Limit training steps for speed
+                    if batch_idx >= 600:  # Limit training steps for speed
                         break
                     
                     try:
