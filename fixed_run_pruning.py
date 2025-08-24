@@ -447,6 +447,9 @@ class NFCorpusDataset(Dataset):
                 )
             
             logger.info(f"\nResults saved to: {results_path}")
+    finally:
+        # Clean up distributed training
+        cleanup_distributed()
 
 
 
