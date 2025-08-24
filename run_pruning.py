@@ -728,14 +728,28 @@ def main():
                     device=config['device'],
                     local_rank=local_rank
                 )
-                # Create masks with proper device handling
-                # Use 1% sampling for BERT to avoid memory issues
-                masks = pruning_module.create_masks_magnitude_based(sample_rate=0.03)
+                # Use the fixed verified pruning module
+                pruning_module = VerifiedPruningModule(
+                    model=model,
+                    target_sparsity=target_sparsity,
+                    device=config['device']
+                )
+                
+                # Create masks - check if the method accepts sample_rate
+                try:
+                    # Try with sample_rate first (if your version supports it)
+                    masks = pruning_module.create_masks_magnitude_based(sample_rate=0.03)
+                except TypeError:
+                    # Fallback to no sample_rate parameter
+                    masks = pruning_module.create_masks_magnitude_based()
+                    if is_main_process():
+                        logger.info("Using create_masks without sample_rate parameter")
                 
                 # Verify initial sparsity
                 initial_sparsity = pruning_module.verify_sparsity()
                 if is_main_process():
                     logger.info(f"Initial sparsity: {initial_sparsity:.2%}")
+                
                 
                 # Create teacher model for distillation (optional)
                 teacher_model = None
@@ -994,5 +1008,6 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
 
 
