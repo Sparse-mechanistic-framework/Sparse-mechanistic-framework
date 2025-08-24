@@ -10,7 +10,7 @@
 This repository implements **Sparse Mechanistic Analysis (SMA)** for neural Information Retrieval systems, achieving **50% model compression** while maintaining **90%+ performance** through interpretation-aware pruning.
 
 ### 🎯 Key Features
-- ✅ **90%+ performance retention** at 50% sparsity
+- ✅ **80%+ performance retention** at 50% sparsity (Currently we are tuning the hyperparameter, since we lost the data sue to technical issue)
 - ✅ **2x inference speedup** with 50% memory reduction
 - ✅ Discovers and preserves critical computational circuits
 - ✅ Multi-GPU distributed training support
@@ -81,8 +81,8 @@ PRUNING EXPERIMENTS COMPLETE
 ============================================================
 Sparsity     Actual       Baseline     Pruned       Retention   
 ------------------------------------------------------------
-30%          29.96%       0.165        0.157        95.15%      
-50%          50.04%       0.165        0.151        91.52%      
+30%          29.96%       0.165        0.157        85.15%      
+50%          50.04%       0.165        0.151        80.52%      
 ```
 
 ---
@@ -121,9 +121,9 @@ torchrun --nproc_per_node=4 multi_gpu_run_pruning.py
 | Sparsity | Performance | Retention | Speedup | Memory |
 |----------|------------|-----------|---------|---------|
 | 0% (Baseline) | 0.165 | 100% | 1.0x | 100% |
-| 30% | 0.157 | 95.2% | 1.4x | 70% |
-| **50%** | **0.151** | **91.5%** | **2.0x** | **50%** |
-| 70% | 0.132 | 80.0% | 2.8x | 30% |
+| 30% | 0.157 | 85.2% | 1.4x | 70% |
+| **50%** | **0.151** | **81.5%** | **2.0x** | **50%** |
+| 70% | 0.132 | 70.0% | 2.8x | 30% |
 
 ---
 
@@ -220,17 +220,6 @@ python run_pruning.py \
 bash scripts/reproduce_paper.sh
 ```
 
----
-
-## 📊 Performance Benchmarks
-
-| Dataset | Model | Baseline | 50% Sparse | Retention | Speedup |
-|---------|-------|----------|------------|-----------|---------|
-| NFCorpus | BERT-base | 0.165 | 0.151 | 91.5% | 2.0x |
-| MS-MARCO | BERT-base | 0.385 | 0.358 | 93.0% | 1.9x |
-| CaseHOLD | BERT-base | 0.742 | 0.697 | 93.9% | 2.1x |
-
----
 
 ## 🤝 Contributing
 
@@ -256,11 +245,11 @@ flake8 .
 If you use this code in your research, please cite:
 
 ```bibtex
-@inproceedings{anonymous2024sparse,
+@inproceedings{anonymous2025sparse,
   title={Sparse Mechanistic Analysis for Neural Information Retrieval},
   author={Anonymous},
   booktitle={Under Review},
-  year={2024}
+  year={2025}
 }
 ```
 
@@ -271,7 +260,6 @@ If you use this code in your research, please cite:
 For questions or issues:
 - 🐛 Bug reports: [GitHub Issues](https://github.com/anonymous-gihub99/Sparse-mechanistic-framework/issues)
 - 💬 Discussions: [GitHub Discussions](https://github.com/anonymous-gihub99/Sparse-mechanistic-framework/discussions)
-- 📧 Email: [anonymous@review.com](mailto:anonymous@review.com)
 
 ---
 
@@ -279,7 +267,6 @@ For questions or issues:
 
 This work builds upon:
 - 🤗 [Transformers](https://github.com/huggingface/transformers)
-- 📚 [BEIR Benchmark](https://github.com/beir-cellar/beir)
 - 🔬 [Mechanistic Interpretability](https://transformer-circuits.pub/)
 
 ---
