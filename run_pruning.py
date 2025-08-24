@@ -738,7 +738,7 @@ def main():
                 # Create masks - check if the method accepts sample_rate
                 try:
                     # Try with sample_rate first (if your version supports it)
-                    masks = pruning_module.create_masks_magnitude_based(sample_rate=0.03)
+                    masks = pruning_module.create_masks_magnitude_based()
                 except TypeError:
                     # Fallback to no sample_rate parameter
                     masks = pruning_module.create_masks_magnitude_based()
@@ -1008,6 +1008,7 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
 
 
 
