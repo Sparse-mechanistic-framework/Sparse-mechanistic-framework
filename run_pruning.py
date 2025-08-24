@@ -629,7 +629,7 @@ def main():
             progress_bar = tqdm(train_loader, desc=f"Training Baseline Epoch {epoch+1}", disable=rank != 0)
             
             for batch_idx, batch in enumerate(progress_bar):
-                if batch_idx >= 300:  # Limited baseline training
+                if batch_idx >= 600:  # Limited baseline training
                     break
                 
                 batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
@@ -700,7 +700,7 @@ def main():
                     initial_sparsity=0.0,
                     final_sparsity=target_sparsity,
                     pruning_steps=110,
-                    pruning_frequency=max(1, len(train_loader) // 80),  # gradual schedule; increase for gentler pruning# t
+                    pruning_frequency=8,  # gradual schedule; increase for gentler pruning# t
                     pruning_method=config['pruning_method'],
                     learning_rate=config['learning_rate'],
                     warmup_steps=int(len(train_loader) * config['warmup_ratio']),
@@ -1008,6 +1008,7 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
 
 
 
