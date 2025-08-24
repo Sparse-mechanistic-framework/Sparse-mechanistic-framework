@@ -544,7 +544,7 @@ def main():
             'target_sparsities': [0.3, 0.5, 0.7],
             'num_epochs': 4,
             'batch_size': 4,
-            'learning_rate': 2e-5,
+            'learning_rate': 2e-4,
             'warmup_ratio': 0.05,
             'output_dir': Path('./phase2_results'),
             'phase1_dir': Path('./phase1_results'),
