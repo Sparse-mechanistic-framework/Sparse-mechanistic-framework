@@ -14,7 +14,6 @@ This repository implements **Sparse Mechanistic Analysis (SMA)** for neural Info
 - ✅ **2x inference speedup** with 50% memory reduction
 - ✅ Discovers and preserves critical computational circuits
 - ✅ Multi-GPU distributed training support
-- ✅ Cross-domain generalization (medical, legal, general)
 
 ---
 
