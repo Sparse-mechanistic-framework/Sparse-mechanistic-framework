@@ -50,55 +50,53 @@ class VerifiedPruningModule:
         self.hooks = []
         
     def create_masks_magnitude_based(self):
-        """Create masks based on magnitude pruning"""
+        """Create masks using magnitude-based pruning"""
         logger.info(f"Creating masks for {self.target_sparsity:.0%} sparsity")
         
         # Collect all weights
         all_weights = []
-        param_list = []
         
-        for name, param in self.model.named_parameters():
-            if 'weight' in name and 'layer' in name:
-                all_weights.append(param.data.abs().flatten())
-                param_list.append((name, param))
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    weight_abs = param.data.abs().flatten()
+                    all_weights.append(weight_abs.cpu())  # Move to CPU to avoid memory issues
         
-        if not all_weights:
-            logger.error("No weights found for pruning!")
-            return
-        
-        # Calculate global threshold
+        # Concatenate all weights
         all_weights = torch.cat(all_weights)
-        threshold = torch.quantile(all_weights, self.target_sparsity)
-        logger.info(f"Pruning threshold: {threshold:.6f}")
         
-        # Create and apply masks
+        # FIX: Replace quantile with sorting approach for large tensors
+        if len(all_weights) > 10_000_000:  # If tensor is large (>10M elements)
+            # Use sorting instead of quantile
+            sorted_weights, _ = torch.sort(all_weights)
+            threshold_idx = int(len(sorted_weights) * self.target_sparsity)
+            threshold = sorted_weights[threshold_idx].item() if threshold_idx < len(sorted_weights) else 0.0
+        else:
+            # Use quantile for smaller tensors
+            threshold = torch.quantile(all_weights, self.target_sparsity).item()
+        
+        # Apply threshold to create masks
         total_params = 0
-        pruned_params = 0
+        zero_params = 0
         
-        for name, param in param_list:
-            mask = (param.data.abs() > threshold).float()
-            self.param_to_mask[param] = mask
-            
-            # Apply mask immediately
-            param.data.mul_(mask)
-            
-            # Count statistics
-            total_params += param.numel()
-            pruned_params += (mask == 0).sum().item()
-            
-            # Register backward hook to maintain sparsity during backprop
-            def make_hook(mask):
-                def hook(grad):
-                    return grad * mask
-                return hook
-            
-            handle = param.register_hook(make_hook(mask))
-            self.hooks.append(handle)
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    mask = (param.data.abs() > threshold).float()
+                    self.masks[param] = mask
+                    
+                    # Apply mask
+                    param.data.mul_(mask)
+                    
+                    # Track sparsity
+                    n_zeros = (mask == 0).sum().item()
+                    zero_params += n_zeros
+                    total_params += param.numel()
         
-        actual_sparsity = pruned_params / total_params if total_params > 0 else 0
-        logger.info(f"Masks created - Actual sparsity: {actual_sparsity:.2%}")
+        actual_sparsity = zero_params / total_params if total_params > 0 else 0
+        logger.info(f"Created masks - Target: {self.target_sparsity:.0%}, Actual: {actual_sparsity:.2%}")
         
-        return self.param_to_mask
+        return self.masks
     
     def verify_sparsity(self):
         """Verify that sparsity is actually maintained"""
