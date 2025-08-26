@@ -1,7 +1,7 @@
 """
 Multi-GPU Pruning Script with Distributed Training - FIXED VERSION
-Supports 4 GPUs with memory optimization and proper SMA implementation
-Run with: torchrun --nproc_per_node=4 run_pruning_fixed.py
+Fixes gradual pruning, layer protection, and distillation issues
+Run with: torchrun --nproc_per_node=4 run_pruning.py
 """
 
 import torch
@@ -30,142 +30,18 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============= FIXED PRUNING MODULE =============
-class MemoryEfficientPruningModule:
-    """Memory-efficient pruning module that avoids quantile() errors"""
-    
-    def __init__(self, model, target_sparsity, device='cuda'):
-        self.model = model
-        self.target_sparsity = target_sparsity
-        self.device = device
-        self.masks = {}
-        
-    def create_masks_magnitude_based(self):
-        """Create masks using sampling to avoid memory issues"""
-        logger = logging.getLogger(__name__)
-        logger.info(f"Creating masks for {self.target_sparsity:.0%} sparsity")
-        
-        try:
-            # Method 1: Sample-based threshold computation
-            threshold = self._compute_threshold_sampled()
-            
-            # Apply threshold to create masks
-            total_params = 0
-            zero_params = 0
-            
-            with torch.no_grad():
-                for name, param in self.model.named_parameters():
-                    if 'weight' in name and param.requires_grad:
-                        mask = (param.data.abs() > threshold).float()
-                        self.masks[param] = mask
-                        
-                        # Track sparsity
-                        n_zeros = (mask == 0).sum().item()
-                        zero_params += n_zeros
-                        total_params += param.numel()
-                        
-                        # Apply mask immediately
-                        param.data.mul_(mask)
-            
-            actual_sparsity = zero_params / total_params if total_params > 0 else 0
-            logger.info(f"Created masks - Target: {self.target_sparsity:.0%}, Actual: {actual_sparsity:.2%}")
-            
-        except Exception as e:
-            logger.error(f"Error creating masks: {str(e)}")
-            raise
-        
-        return self.masks
-    
-    def _compute_threshold_sampled(self, sample_size=100000):
-        """Compute threshold using sampling to avoid memory issues"""
-        all_weights = []
-        
-        try:
-            with torch.no_grad():
-                for name, param in self.model.named_parameters():
-                    if 'weight' in name and param.requires_grad:
-                        weight_abs = param.data.abs().flatten()
-                        
-                        # Sample if tensor is too large
-                        if weight_abs.numel() > sample_size:
-                            indices = torch.randperm(weight_abs.numel())[:sample_size]
-                            weight_sample = weight_abs[indices]
-                        else:
-                            weight_sample = weight_abs
-                        
-                        all_weights.append(weight_sample.cpu())
-            
-            # Concatenate all samples
-            all_weights = torch.cat(all_weights)
-            
-            # Use sorting instead of quantile for large tensors
-            if len(all_weights) > 1e6:
-                # Sort and find threshold
-                sorted_weights, _ = torch.sort(all_weights)
-                threshold_idx = int(len(sorted_weights) * self.target_sparsity)
-                threshold = sorted_weights[threshold_idx].item()
-            else:
-                # Use quantile for smaller tensors
-                threshold = torch.quantile(all_weights, self.target_sparsity).item()
-            
-            return threshold
-            
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error computing threshold: {str(e)}")
-            # Fallback to a default threshold
-            return 0.01
-    
-    def verify_sparsity(self):
-        """Verify actual sparsity of the model"""
-        total_params = 0
-        zero_params = 0
-        
-        try:
-            with torch.no_grad():
-                for param in self.masks.keys():
-                    zeros = (param.data.abs() < 1e-8).sum().item()
-                    zero_params += zeros
-                    total_params += param.numel()
-            
-            return zero_params / total_params if total_params > 0 else 0
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error verifying sparsity: {str(e)}")
-            return 0
-    
-    def enforce_masks(self):
-        """Re-apply masks to ensure sparsity"""
-        try:
-            with torch.no_grad():
-                for param, mask in self.masks.items():
-                    param.data.mul_(mask)
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error enforcing masks: {str(e)}")
+# ============= TRY TO IMPORT MODULES =============
+try:
+    from fix_validation import (
+        MaskedAdam,
+        VerifiedPruningModule,
+        validate_pruning_results
+    )
+    USE_FIX_VALIDATION = True
+except ImportError:
+    USE_FIX_VALIDATION = False
+    print("Warning: fix_validation module not found, using built-in pruning")
 
-
-class MaskedAdam(torch.optim.Adam):
-    """Adam optimizer that preserves pruning masks"""
-    
-    def __init__(self, params, masks=None, lr=1e-3, **kwargs):
-        super().__init__(params, lr=lr, **kwargs)
-        self.masks = masks or {}
-        
-    def step(self, closure=None):
-        loss = super().step(closure)
-        
-        # Re-apply masks after weight update
-        try:
-            with torch.no_grad():
-                for group in self.param_groups:
-                    for p in group['params']:
-                        if p in self.masks:
-                            p.data.mul_(self.masks[p])
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error in MaskedAdam step: {str(e)}")
-        
-        return loss
-
-
-# Import only if these modules exist, otherwise use the fixed versions above
 try:
     from advanced_implementation import (
         PruningConfig, 
@@ -173,58 +49,363 @@ try:
         PruningTrainer,
         calculate_actual_sparsity
     )
+    USE_ADVANCED = True
 except ImportError:
-    # Define minimal versions if imports fail
+    USE_ADVANCED = False
+    print("Warning: advanced_implementation module not found, using simplified version")
+
+# ============= PRUNING CONFIGURATION CLASS =============
+if not USE_ADVANCED:
     class PruningConfig:
-        def __init__(self, **kwargs):
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-    
+        def __init__(self, 
+                     initial_sparsity=0.0,
+                     final_sparsity=0.5,
+                     pruning_steps=200,  # Increased for more gradual
+                     pruning_frequency=15,  # More frequent updates
+                     pruning_method='magnitude',
+                     learning_rate=2e-5,
+                     warmup_steps=100,
+                     use_distillation=True,
+                     distillation_alpha=0.5,
+                     temperature=5.0,
+                     circuit_preservation_weight=2.5,  # Increased protection
+                     protect_critical_layers=None,
+                     gradient_accumulation_steps=1,
+                     memory_efficient=True):
+            self.initial_sparsity = initial_sparsity
+            self.final_sparsity = final_sparsity
+            self.pruning_steps = pruning_steps
+            self.pruning_frequency = pruning_frequency
+            self.pruning_method = pruning_method
+            self.learning_rate = learning_rate
+            self.warmup_steps = warmup_steps
+            self.use_distillation = use_distillation
+            self.distillation_alpha = distillation_alpha
+            self.temperature = temperature
+            self.circuit_preservation_weight = circuit_preservation_weight
+            # Fixed: Protect more critical layers for BERT IR
+            self.protect_critical_layers = protect_critical_layers or [2, 3, 4, 5, 6, 7, 8]
+            self.gradient_accumulation_steps = gradient_accumulation_steps
+            self.memory_efficient = memory_efficient
+
     def calculate_actual_sparsity(model):
         total = 0
         zeros = 0
-        try:
+        with torch.no_grad():
+            for param in model.parameters():
+                if param.requires_grad:
+                    total += param.numel()
+                    zeros += (param.abs() < 1e-8).sum().item()
+        return zeros / total if total > 0 else 0
+
+# ============= GRADUAL PRUNING MODULE WITH FIX_VALIDATION SUPPORT =============
+class GradualPruningWithVerification:
+    """Wrapper that adds gradual pruning to VerifiedPruningModule"""
+    
+    def __init__(self, model, config, importance_scores, device='cuda'):
+        self.model = model
+        self.config = config
+        self.device = device
+        self.importance_scores = importance_scores
+        self.current_sparsity = config.initial_sparsity
+        self.pruning_step = 0
+        self.base_module = None
+        
+        # Initialize the base pruning module
+        if USE_FIX_VALIDATION:
+            self.base_module = VerifiedPruningModule(
+                model=model,
+                target_sparsity=self.current_sparsity,  # Start with initial
+                device=device
+            )
+        
+    def update_and_create_masks(self):
+        """Update sparsity and create new masks"""
+        # Update sparsity level
+        if self.pruning_step >= self.config.pruning_steps:
+            self.current_sparsity = self.config.final_sparsity
+        else:
+            progress = self.pruning_step / self.config.pruning_steps
+            sparsity_range = self.config.final_sparsity - self.config.initial_sparsity
+            # Cubic schedule for smoother transition
+            self.current_sparsity = self.config.initial_sparsity + sparsity_range * (progress ** 3)
+        
+        self.pruning_step += 1
+        
+        # Update target sparsity in base module
+        if self.base_module:
+            self.base_module.target_sparsity = self.current_sparsity
+            return self.base_module.create_masks_magnitude_based()
+        else:
+            return self._create_masks_with_importance()
+    
+    def _create_masks_with_importance(self):
+        """Fallback mask creation with importance scores"""
+        masks = {}
+        all_weights = []
+        param_list = []
+        
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    weight_abs = param.data.abs()
+                    
+                    # Apply importance scaling
+                    importance = 1.0
+                    for key in self.importance_scores:
+                        if key in name or name in key:
+                            importance = self.importance_scores[key]
+                            break
+                    
+                    # Check if layer is protected
+                    layer_num = self._get_layer_number(name)
+                    if layer_num in self.config.protect_critical_layers:
+                        importance *= self.config.circuit_preservation_weight
+                    
+                    weighted_values = weight_abs * importance
+                    all_weights.append(weighted_values.flatten().cpu())
+                    param_list.append(param)
+        
+        # Find threshold
+        all_weights = torch.cat(all_weights)
+        sorted_weights, _ = torch.sort(all_weights)
+        threshold_idx = int(len(sorted_weights) * self.current_sparsity)
+        threshold = sorted_weights[threshold_idx].item() if threshold_idx < len(sorted_weights) else 0
+        
+        # Create masks
+        for name, param in self.model.named_parameters():
+            if 'weight' in name and param.requires_grad:
+                importance = 1.0
+                for key in self.importance_scores:
+                    if key in name or name in key:
+                        importance = self.importance_scores[key]
+                        break
+                
+                layer_num = self._get_layer_number(name)
+                if layer_num in self.config.protect_critical_layers:
+                    importance *= self.config.circuit_preservation_weight
+                
+                weighted_param = param.data.abs() * importance
+                mask = (weighted_param > threshold).float()
+                masks[param] = mask
+                param.data.mul_(mask)
+        
+        return masks
+    
+    def _get_layer_number(self, name):
+        """Extract layer number from parameter name"""
+        parts = name.split('.')
+        for part in parts:
+            if part.isdigit():
+                return int(part)
+        return -1
+    
+    def enforce_masks(self):
+        """Re-apply masks"""
+        if self.base_module:
+            self.base_module.enforce_masks()
+    
+    def verify_sparsity(self):
+        """Get current sparsity"""
+        if self.base_module and hasattr(self.base_module, 'verify_sparsity'):
+            return self.base_module.verify_sparsity()
+        
+        total = 0
+        zeros = 0
+        with torch.no_grad():
+            for param in self.model.parameters():
+                if param.requires_grad and 'weight' in str(param):
+                    total += param.numel()
+                    zeros += (param.abs() < 1e-8).sum().item()
+        return zeros / total if total > 0 else 0
+
+# ============= GRADUAL PRUNING MODULE (Original, improved) =============
+class GradualPruningModule:
+    """Original gradual pruning with improvements"""
+    
+    def __init__(self, model, config, importance_scores=None, circuits=None, device='cuda'):
+        self.model = model
+        self.config = config
+        self.device = device
+        self.importance_scores = importance_scores or {}
+        self.circuits = circuits or []
+        self.masks = {}
+        self.current_sparsity = config.initial_sparsity
+        self.pruning_step = 0
+        
+        # Initialize masks
+        self._initialize_masks()
+    
+    def _initialize_masks(self):
+        """Initialize all masks to ones (no pruning)"""
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    self.masks[param] = torch.ones_like(param)
+    
+    def update_sparsity(self):
+        """Update current sparsity level using cubic schedule"""
+        if self.pruning_step >= self.config.pruning_steps:
+            self.current_sparsity = self.config.final_sparsity
+        else:
+            progress = self.pruning_step / self.config.pruning_steps
+            sparsity_range = self.config.final_sparsity - self.config.initial_sparsity
+            # Cubic schedule for gradual pruning
+            self.current_sparsity = self.config.initial_sparsity + sparsity_range * (progress ** 3)
+        
+        self.pruning_step += 1
+        return self.current_sparsity
+    
+    def create_masks_with_importance(self):
+        """Create masks considering importance scores and circuit preservation"""
+        logger = logging.getLogger(__name__)
+        logger.info(f"Creating masks for {self.current_sparsity:.1%} sparsity (step {self.pruning_step})")
+        
+        all_weights = []
+        
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    weight_abs = param.data.abs().flatten()
+                    
+                    # Get importance score for this layer
+                    layer_importance = 1.0
+                    for key in self.importance_scores:
+                        if key in name or name in key:
+                            layer_importance = self.importance_scores[key]
+                            break
+                    
+                    # Check if layer is protected
+                    layer_num = self._get_layer_number(name)
+                    if layer_num in self.config.protect_critical_layers:
+                        layer_importance *= self.config.circuit_preservation_weight
+                    
+                    # Combine magnitude with importance
+                    weighted_values = weight_abs * layer_importance
+                    all_weights.append(weighted_values.cpu())
+        
+        # Concatenate all weights
+        all_weights = torch.cat(all_weights)
+        
+        # Find threshold
+        if len(all_weights) > 1e6:
+            # Sample for large models
+            sample_size = min(1000000, len(all_weights))
+            indices = torch.randperm(len(all_weights))[:sample_size]
+            sampled_weights = all_weights[indices]
+            sorted_weights, _ = torch.sort(sampled_weights)
+            threshold_idx = int(len(sorted_weights) * self.current_sparsity)
+            threshold = sorted_weights[threshold_idx].item()
+        else:
+            sorted_weights, _ = torch.sort(all_weights)
+            threshold_idx = int(len(sorted_weights) * self.current_sparsity)
+            threshold = sorted_weights[threshold_idx].item()
+        
+        # Apply threshold to create masks
+        total_params = 0
+        zero_params = 0
+        
+        for name, param in self.model.named_parameters():
+            if 'weight' in name and param.requires_grad:
+                # Get importance-weighted values
+                layer_importance = 1.0
+                for key in self.importance_scores:
+                    if key in name or name in key:
+                        layer_importance = self.importance_scores[key]
+                        break
+                
+                layer_num = self._get_layer_number(name)
+                if layer_num in self.config.protect_critical_layers:
+                    layer_importance *= self.config.circuit_preservation_weight
+                
+                weighted_param = param.data.abs() * layer_importance
+                mask = (weighted_param > threshold).float()
+                self.masks[param] = mask
+                
+                # Apply mask
+                param.data.mul_(mask)
+                
+                # Track sparsity
+                n_zeros = (mask == 0).sum().item()
+                zero_params += n_zeros
+                total_params += param.numel()
+        
+        actual_sparsity = zero_params / total_params if total_params > 0 else 0
+        logger.info(f"Target: {self.current_sparsity:.1%}, Actual: {actual_sparsity:.1%}")
+        
+        return self.masks
+    
+    def _get_layer_number(self, name):
+        """Extract layer number from parameter name"""
+        parts = name.split('.')
+        for part in parts:
+            if part.isdigit():
+                return int(part)
+        return -1
+    
+    def enforce_masks(self):
+        """Re-apply masks to ensure sparsity"""
+        with torch.no_grad():
+            for param, mask in self.masks.items():
+                param.data.mul_(mask)
+    
+    def get_sparsity(self):
+        """Calculate current sparsity"""
+        total = 0
+        zeros = 0
+        with torch.no_grad():
+            for param, mask in self.masks.items():
+                zeros += (mask == 0).sum().item()
+                total += mask.numel()
+        return zeros / total if total > 0 else 0
+
+
+# ============= MASKED ADAM OPTIMIZER =============
+if not USE_FIX_VALIDATION:
+    class MaskedAdam(torch.optim.Adam):
+        """Adam optimizer that preserves pruning masks"""
+        
+        def __init__(self, params, masks=None, lr=1e-3, **kwargs):
+            super().__init__(params, lr=lr, **kwargs)
+            self.masks = masks or {}
+            
+        def step(self, closure=None):
+            loss = super().step(closure)
+            
+            # Re-apply masks after weight update
             with torch.no_grad():
-                for param in model.parameters():
-                    if param.requires_grad:
-                        total += param.numel()
-                        zeros += (param.abs() < 1e-8).sum().item()
-            return zeros / total if total > 0 else 0
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error calculating sparsity: {str(e)}")
-            return 0
+                for group in self.param_groups:
+                    for p in group['params']:
+                        if p in self.masks:
+                            p.data.mul_(self.masks[p])
+            
+            return loss
+
 
 # ============= DISTRIBUTED TRAINING SETUP =============
 
 def setup_distributed():
     """Initialize distributed training"""
-    try:
-        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-            rank = int(os.environ['RANK'])
-            world_size = int(os.environ['WORLD_SIZE'])
-            local_rank = int(os.environ['LOCAL_RANK'])
-        else:
-            rank = 0
-            world_size = 1
-            local_rank = 0
-        
-        if world_size > 1:
-            dist.init_process_group(backend='nccl')
-            torch.cuda.set_device(local_rank)
-        
-        return rank, world_size, local_rank
-    except Exception as e:
-        print(f"Error setting up distributed training: {str(e)}")
-        return 0, 1, 0
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        rank = 0
+        world_size = 1
+        local_rank = 0
+    
+    if world_size > 1:
+        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(local_rank)
+    
+    return rank, world_size, local_rank
 
 
 def cleanup_distributed():
     """Clean up distributed training"""
-    try:
-        if dist.is_initialized():
-            dist.destroy_process_group()
-    except Exception as e:
-        print(f"Error cleaning up distributed training: {str(e)}")
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def is_main_process():
@@ -234,23 +415,19 @@ def is_main_process():
 
 def setup_logging(rank):
     """Setup logging for distributed training"""
-    try:
-        level = logging.INFO if rank == 0 else logging.WARNING
-        logging.basicConfig(
-            level=level,
-            format=f'[Rank {rank}] %(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(f'pruning_rank_{rank}.log'),
-                logging.StreamHandler() if rank == 0 else logging.NullHandler()
-            ]
-        )
-        return logging.getLogger(__name__)
-    except Exception as e:
-        print(f"Error setting up logging: {str(e)}")
-        return logging.getLogger(__name__)
+    level = logging.INFO if rank == 0 else logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format=f'[Rank {rank}] %(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(f'pruning_rank_{rank}.log'),
+            logging.StreamHandler() if rank == 0 else logging.NullHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
-# ============= MEMORY-OPTIMIZED MODEL =============
+# ============= MODEL AND DATA CLASSES =============
 
 class IRModelWithCheckpointing(nn.Module):
     """IR model with gradient checkpointing for memory efficiency"""
@@ -260,37 +437,27 @@ class IRModelWithCheckpointing(nn.Module):
         self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Linear(base_model.config.hidden_size, 1)
         
-        # Enable gradient checkpointing
-        try:
-            if hasattr(self.bert, 'gradient_checkpointing_enable'):
-                self.bert.gradient_checkpointing_enable()
-        except Exception as e:
-            logging.getLogger(__name__).warning(f"Could not enable gradient checkpointing: {str(e)}")
+        if hasattr(self.bert, 'gradient_checkpointing_enable'):
+            self.bert.gradient_checkpointing_enable()
         
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
-        try:
-            if self.training and hasattr(self.bert, 'gradient_checkpointing'):
-                self.bert.gradient_checkpointing = True
-                
-            outputs = self.bert(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                token_type_ids=token_type_ids
-            )
-            pooled = outputs.pooler_output
-            pooled = self.dropout(pooled)
-            logits = self.classifier(pooled)
+        if self.training and hasattr(self.bert, 'gradient_checkpointing'):
+            self.bert.gradient_checkpointing = True
             
-            return type('Output', (), {'logits': logits})()
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error in model forward pass: {str(e)}")
-            raise
+        outputs = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
+        pooled = outputs.pooler_output
+        pooled = self.dropout(pooled)
+        logits = self.classifier(pooled)
+        
+        return type('Output', (), {'logits': logits})()
 
-
-# ============= DATA LOADING WITH DISTRIBUTED SUPPORT =============
 
 class NFCorpusDataset(Dataset):
-    def __init__(self, split='test', max_samples=10000, cache_dir='./cache', tokenizer=None, max_length=256):
+    def __init__(self, split='test', max_samples=7000, cache_dir='./cache', tokenizer=None, max_length=256):
         self.split = split
         self.max_samples = max_samples
         self.cache_dir = Path(cache_dir)
@@ -302,35 +469,28 @@ class NFCorpusDataset(Dataset):
     def _load_data(self):
         cache_file = self.cache_dir / f'nfcorpus_{self.split}_v3.pkl'
         
-        # Try to load from cache first
         if cache_file.exists():
-            try:
-                with open(cache_file, 'rb') as f:
-                    return pickle.load(f)
-            except Exception as e:
-                print(f"Error loading cache: {str(e)}")
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
         
         if is_main_process():
             print("Loading NFCorpus from HuggingFace datasets...")
             
             try:
-                # Load corpus
                 corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
                 corpus = {}
                 for item in corpus_data:
-                    doc_id = item.get('_id', item.get('id', str(len(corpus))))
+                    doc_id = item['_id'] if '_id' in item else item.get('id', str(len(corpus)))
                     text = item.get('text', '')
                     title = item.get('title', '')
                     corpus[doc_id] = f"{title} {text}".strip()
                 
-                # Load queries
                 queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
                 queries = {}
                 for item in queries_data:
-                    query_id = item.get('_id', item.get('id', str(len(queries))))
+                    query_id = item['_id'] if '_id' in item else item.get('id', str(len(queries)))
                     queries[query_id] = item.get('text', '')
                 
-                # Load qrels
                 qrels_data = load_dataset("mteb/nfcorpus", "default", split=self.split)
                 
                 processed_data = []
@@ -349,7 +509,6 @@ class NFCorpusDataset(Dataset):
                         doc_text = corpus.get(corpus_id, "")
                         
                         if query_text and doc_text:
-                            # Truncate document text if too long
                             doc_text = ' '.join(doc_text.split()[:500])
                             processed_data.append({
                                 'query': query_text,
@@ -360,7 +519,6 @@ class NFCorpusDataset(Dataset):
                             
             except Exception as e:
                 print(f"Failed to load NFCorpus: {str(e)}")
-                # Create dummy data as fallback
                 processed_data = []
                 for i in range(min(100, self.max_samples)):
                     processed_data.append({
@@ -369,25 +527,15 @@ class NFCorpusDataset(Dataset):
                         'relevance': np.random.random()
                     })
             
-            # Save to cache
-            try:
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(processed_data, f)
-            except Exception as e:
-                print(f"Error saving cache: {str(e)}")
+            with open(cache_file, 'wb') as f:
+                pickle.dump(processed_data, f)
         
-        # Synchronize across processes
         if dist.is_initialized():
             dist.barrier()
         
-        # Load cached data
         if cache_file.exists():
-            try:
-                with open(cache_file, 'rb') as f:
-                    return pickle.load(f)
-            except Exception as e:
-                print(f"Error loading cache after barrier: {str(e)}")
-                return []
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)
         
         return []
     
@@ -395,64 +543,52 @@ class NFCorpusDataset(Dataset):
         return len(self.data)
     
     def __getitem__(self, idx):
-        try:
-            sample = self.data[idx]
-            if self.tokenizer:
-                encoded = self.tokenizer(
-                    sample['query'], sample['document'],
-                    padding='max_length', truncation=True,
-                    max_length=self.max_length, return_tensors='pt'
-                )
-                return {
-                    'input_ids': encoded['input_ids'].squeeze(),
-                    'attention_mask': encoded['attention_mask'].squeeze(),
-                    'labels': torch.tensor(sample['relevance'], dtype=torch.float)
-                }
-            return sample
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Error getting item {idx}: {str(e)}")
-            # Return a dummy sample
+        sample = self.data[idx]
+        if self.tokenizer:
+            encoded = self.tokenizer(
+                sample['query'], sample['document'],
+                padding='max_length', truncation=True,
+                max_length=self.max_length, return_tensors='pt'
+            )
             return {
-                'input_ids': torch.zeros(self.max_length, dtype=torch.long),
-                'attention_mask': torch.zeros(self.max_length, dtype=torch.long),
-                'labels': torch.tensor(0.0, dtype=torch.float)
+                'input_ids': encoded['input_ids'].squeeze(),
+                'attention_mask': encoded['attention_mask'].squeeze(),
+                'labels': torch.tensor(sample['relevance'], dtype=torch.float)
             }
+        return sample
 
 
 # ============= HELPER FUNCTIONS =============
 
 def process_importance_scores(phase1_data: Dict) -> Dict[str, float]:
-    """Process Phase 1 importance scores"""
-    try:
-        importance_scores = phase1_data.get('importance_scores', {})
+    """Process Phase 1 importance scores - FIXED to protect more layers"""
+    importance_scores = phase1_data.get('importance_scores', {})
+    
+    unique_values = set(importance_scores.values())
+    if len(unique_values) <= 1:
+        processed_scores = {}
+        for component, score in importance_scores.items():
+            if 'layer_' in component:
+                layer_num = int(component.split('_')[1])
+                
+                # FIXED: Protect layers 2-8 which are most critical for BERT IR
+                if 2 <= layer_num <= 8:
+                    importance = 0.85 + np.random.uniform(-0.05, 0.05)
+                elif layer_num <= 1:
+                    importance = 0.6 + np.random.uniform(-0.1, 0.1)
+                else:  # layers 9-11
+                    importance = 0.5 + np.random.uniform(-0.1, 0.1)
+                
+                if 'attention' in component:
+                    importance *= 1.1  # Attention slightly more important
+                
+                processed_scores[component] = importance
+            else:
+                processed_scores[component] = score
         
-        unique_values = set(importance_scores.values())
-        if len(unique_values) <= 1:
-            processed_scores = {}
-            for component, score in importance_scores.items():
-                if 'layer_' in component:
-                    layer_num = int(component.split('_')[1])
-                    
-                    if 3 <= layer_num <= 8:
-                        importance = 0.8 + np.random.uniform(-0.1, 0.1)
-                    elif layer_num <= 2:
-                        importance = 0.6 + np.random.uniform(-0.1, 0.1)
-                    else:
-                        importance = 0.4 + np.random.uniform(-0.1, 0.1)
-                    
-                    if 'attention' in component:
-                        importance *= 1.1
-                    
-                    processed_scores[component] = importance
-                else:
-                    processed_scores[component] = score
-            
-            return processed_scores
-        
-        return importance_scores
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error processing importance scores: {str(e)}")
-        return {}
+        return processed_scores
+    
+    return importance_scores
 
 
 def evaluate_model_distributed(model, eval_loader, device, local_rank):
@@ -463,70 +599,60 @@ def evaluate_model_distributed(model, eval_loader, device, local_rank):
     labels = []
     losses = []
     
-    try:
-        with torch.no_grad():
-            for batch in tqdm(eval_loader, desc="Evaluating", disable=local_rank != 0):
-                try:
-                    batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-                    
-                    with autocast():
-                        outputs = model(
-                            input_ids=batch['input_ids'],
-                            attention_mask=batch['attention_mask']
-                        )
-                        
-                        logits = outputs.logits.squeeze()
-                        if logits.dim() == 0:
-                            logits = logits.unsqueeze(0)
-                        
-                        batch_labels = batch['labels']
-                        if batch_labels.dim() == 0:
-                            batch_labels = batch_labels.unsqueeze(0)
-                        
-                        loss = F.mse_loss(logits, batch_labels)
-                    
-                    losses.append(loss.item())
-                    predictions.extend(logits.cpu().numpy())
-                    labels.extend(batch_labels.cpu().numpy())
-                except Exception as e:
-                    logging.getLogger(__name__).warning(f"Error in evaluation batch: {str(e)}")
-                    continue
+    with torch.no_grad():
+        for batch in tqdm(eval_loader, desc="Evaluating", disable=local_rank != 0):
+            batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+            
+            with autocast():
+                outputs = model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask']
+                )
+                
+                logits = outputs.logits.squeeze()
+                if logits.dim() == 0:
+                    logits = logits.unsqueeze(0)
+                
+                batch_labels = batch['labels']
+                if batch_labels.dim() == 0:
+                    batch_labels = batch_labels.unsqueeze(0)
+                
+                loss = F.mse_loss(logits, batch_labels)
+            
+            losses.append(loss.item())
+            predictions.extend(logits.cpu().numpy())
+            labels.extend(batch_labels.cpu().numpy())
+    
+    if dist.is_initialized():
+        all_predictions = [None] * dist.get_world_size()
+        all_labels = [None] * dist.get_world_size()
         
-        # Gather results from all processes
-        if dist.is_initialized():
-            all_predictions = [None] * dist.get_world_size()
-            all_labels = [None] * dist.get_world_size()
-            
-            dist.all_gather_object(all_predictions, predictions)
-            dist.all_gather_object(all_labels, labels)
-            
-            if is_main_process():
-                predictions = sum(all_predictions, [])
-                labels = sum(all_labels, [])
+        dist.all_gather_object(all_predictions, predictions)
+        dist.all_gather_object(all_labels, labels)
         
         if is_main_process():
-            predictions = np.array(predictions)
-            labels = np.array(labels)
-            
-            correlation = 0
-            if len(predictions) > 1:
-                correlation = np.corrcoef(predictions, labels)[0, 1]
-                correlation = 0 if np.isnan(correlation) else correlation
-            
-            mse = np.mean((predictions - labels) ** 2)
-            
-            return {
-                'loss': np.mean(losses),
-                'correlation': correlation,
-                'mse': mse,
-                'num_samples': len(predictions)
-            }
+            predictions = sum(all_predictions, [])
+            labels = sum(all_labels, [])
+    
+    if is_main_process():
+        predictions = np.array(predictions)
+        labels = np.array(labels)
         
-        return {'loss': 0, 'correlation': 0, 'mse': 0, 'num_samples': 0}
+        correlation = 0
+        if len(predictions) > 1:
+            correlation = np.corrcoef(predictions, labels)[0, 1]
+            correlation = 0 if np.isnan(correlation) else correlation
         
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error in model evaluation: {str(e)}")
-        return {'loss': 0, 'correlation': 0, 'mse': 0, 'num_samples': 0}
+        mse = np.mean((predictions - labels) ** 2)
+        
+        return {
+            'loss': np.mean(losses),
+            'correlation': correlation,
+            'mse': mse,
+            'num_samples': len(predictions)
+        }
+    
+    return {'loss': 0, 'correlation': 0, 'mse': 0, 'num_samples': 0}
 
 
 # ============= MAIN EXECUTION =============
@@ -537,41 +663,47 @@ def main():
     logger = setup_logging(rank)
     
     try:
-        # Configuration
+        # Configuration with IMPROVED pruning settings
         config = {
             'model_name': 'bert-base-uncased',
             'device': f'cuda:{local_rank}',
             'target_sparsities': [0.3, 0.5, 0.7],
             'num_epochs': 4,
             'batch_size': 4,
-            'learning_rate': 2e-4,
+            'learning_rate': 2e-5,
             'warmup_ratio': 0.05,
             'output_dir': Path('./phase2_results'),
             'phase1_dir': Path('./phase1_results'),
             'use_distillation': True,
             'pruning_method': 'magnitude',
             'max_samples': 4500,
-            'baseline_epochs': 3,
+            'baseline_epochs': 4,
             'gradient_accumulation_steps': 2,
             'fp16': True,
             'num_workers': 2,
             'prefetch_factor': 2,
-            'pin_memory': True
+            'pin_memory': True,
+            # IMPROVED PRUNING SETTINGS
+            'pruning_steps': 200,  # More gradual pruning
+            'pruning_frequency': 15,  # More frequent updates
+            'circuit_preservation_weight': 2.5,  # Stronger protection
+            'protect_critical_layers': [2, 3, 4, 5, 6, 7, 8],  # Fixed layers
+            'distillation_alpha': 0.6,  # More weight on distillation
+            'temperature': 4.0,  # Softer distillation
         }
         
         if is_main_process():
             logger.info(f"Configuration: {json.dumps(config, indent=2, default=str)}")
             logger.info(f"World size: {world_size}, Rank: {rank}, Local rank: {local_rank}")
             logger.info(f"Total effective batch size: {config['batch_size'] * world_size * config['gradient_accumulation_steps']}")
+            logger.info(f"Using fix_validation module: {USE_FIX_VALIDATION}")
+            logger.info(f"Using advanced_implementation module: {USE_ADVANCED}")
         
         # Create directories
         if is_main_process():
-            try:
-                config['output_dir'].mkdir(exist_ok=True, parents=True)
-                (config['output_dir'] / 'models').mkdir(exist_ok=True)
-                (config['output_dir'] / 'metrics').mkdir(exist_ok=True)
-            except Exception as e:
-                logger.error(f"Error creating directories: {str(e)}")
+            config['output_dir'].mkdir(exist_ok=True, parents=True)
+            (config['output_dir'] / 'models').mkdir(exist_ok=True)
+            (config['output_dir'] / 'metrics').mkdir(exist_ok=True)
         
         if dist.is_initialized():
             dist.barrier()
@@ -609,38 +741,30 @@ def main():
             logger.info("\n" + "="*60)
             logger.info("Initializing models...")
         
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(config['model_name'])
-            
-            base_model = AutoModel.from_pretrained(
-                config['model_name'],
-                torch_dtype=torch.float32
-            )
-            
-            if hasattr(base_model, 'gradient_checkpointing_enable'):
-                base_model.gradient_checkpointing_enable()
-        except Exception as e:
-            logger.critical(f"Failed to load model: {str(e)}")
-            raise
+        tokenizer = AutoTokenizer.from_pretrained(config['model_name'])
+        
+        base_model = AutoModel.from_pretrained(
+            config['model_name'],
+            torch_dtype=torch.float32
+        )
+        
+        if hasattr(base_model, 'gradient_checkpointing_enable'):
+            base_model.gradient_checkpointing_enable()
         
         # Load data
         if is_main_process():
             logger.info("\n" + "="*60)
             logger.info("Loading NFCorpus data...")
         
-        try:
-            dataset = NFCorpusDataset(
-                split='test',
-                max_samples=config['max_samples'],
-                tokenizer=tokenizer
-            )
-            
-            train_size = int(0.8 * len(dataset))
-            val_size = len(dataset) - train_size
-            train_dataset, eval_dataset = random_split(dataset, [train_size, val_size])
-        except Exception as e:
-            logger.critical(f"Failed to load dataset: {str(e)}")
-            raise
+        dataset = NFCorpusDataset(
+            split='test',
+            max_samples=config['max_samples'],
+            tokenizer=tokenizer
+        )
+        
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, eval_dataset = random_split(dataset, [train_size, val_size])
         
         # Create samplers
         train_sampler = DistributedSampler(
@@ -658,31 +782,27 @@ def main():
         ) if world_size > 1 else None
         
         # Create data loaders
-        try:
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=config['batch_size'],
-                sampler=train_sampler,
-                shuffle=(train_sampler is None),
-                num_workers=config['num_workers'],
-                pin_memory=config['pin_memory'],
-                prefetch_factor=config['prefetch_factor'],
-                persistent_workers=True if config['num_workers'] > 0 else False
-            )
-            
-            eval_loader = DataLoader(
-                eval_dataset,
-                batch_size=config['batch_size'] * 2,
-                sampler=eval_sampler,
-                shuffle=False,
-                num_workers=config['num_workers'],
-                pin_memory=config['pin_memory'],
-                prefetch_factor=config['prefetch_factor'],
-                persistent_workers=True if config['num_workers'] > 0 else False
-            )
-        except Exception as e:
-            logger.error(f"Error creating data loaders: {str(e)}")
-            raise
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config['batch_size'],
+            sampler=train_sampler,
+            shuffle=(train_sampler is None),
+            num_workers=config['num_workers'],
+            pin_memory=config['pin_memory'],
+            prefetch_factor=config['prefetch_factor'],
+            persistent_workers=True if config['num_workers'] > 0 else False
+        )
+        
+        eval_loader = DataLoader(
+            eval_dataset,
+            batch_size=config['batch_size'] * 2,
+            sampler=eval_sampler,
+            shuffle=False,
+            num_workers=config['num_workers'],
+            pin_memory=config['pin_memory'],
+            prefetch_factor=config['prefetch_factor'],
+            persistent_workers=True if config['num_workers'] > 0 else False
+        )
         
         if is_main_process():
             logger.info(f"Dataset: {len(train_dataset)} train, {len(eval_dataset)} eval")
@@ -693,79 +813,67 @@ def main():
             logger.info("\n" + "="*60)
             logger.info("Training baseline model...")
         
-        try:
-            baseline_model = IRModelWithCheckpointing(copy.deepcopy(base_model))
-            baseline_model = baseline_model.to(config['device'])
+        baseline_model = IRModelWithCheckpointing(copy.deepcopy(base_model))
+        baseline_model = baseline_model.to(config['device'])
+        
+        if world_size > 1:
+            baseline_model = DDP(baseline_model, device_ids=[local_rank], output_device=local_rank)
+        
+        optimizer = torch.optim.AdamW(baseline_model.parameters(), lr=2e-5)
+        scaler = GradScaler()
+        
+        baseline_model.train()
+        for epoch in range(config['baseline_epochs']):
+            if train_sampler:
+                train_sampler.set_epoch(epoch)
             
-            if world_size > 1:
-                baseline_model = DDP(baseline_model, device_ids=[local_rank], output_device=local_rank)
+            progress_bar = tqdm(train_loader, desc=f"Training Baseline Epoch {epoch+1}", disable=rank != 0)
             
-            optimizer = torch.optim.AdamW(baseline_model.parameters(), lr=2e-5)
-            scaler = GradScaler()
-            
-            baseline_model.train()
-            for epoch in range(config['baseline_epochs']):
-                if train_sampler:
-                    train_sampler.set_epoch(epoch)
+            for batch_idx, batch in enumerate(progress_bar):
+                if batch_idx >= 750:
+                    break
                 
-                progress_bar = tqdm(train_loader, desc=f"Training Baseline Epoch {epoch+1}", disable=rank != 0)
+                batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
+                        for k, v in batch.items()}
                 
-                for batch_idx, batch in enumerate(progress_bar):
-                    if batch_idx >= 600:  # Limit training steps for speed
-                        break
+                with autocast():
+                    outputs = baseline_model(
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask']
+                    )
                     
-                    try:
-                        batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
-                                for k, v in batch.items()}
-                        
-                        with autocast():
-                            outputs = baseline_model(
-                                input_ids=batch['input_ids'],
-                                attention_mask=batch['attention_mask']
-                            )
-                            
-                            logits = outputs.logits.squeeze()
-                            if logits.dim() == 0:
-                                logits = logits.unsqueeze(0)
-                            
-                            loss = F.mse_loss(logits, batch['labels'])
-                        
-                        scaler.scale(loss).backward()
-                        
-                        if (batch_idx + 1) % config['gradient_accumulation_steps'] == 0:
-                            scaler.step(optimizer)
-                            scaler.update()
-                            optimizer.zero_grad()
-                        
-                        if rank == 0:
-                            progress_bar.set_postfix({'loss': f"{loss.item():.4f}"})
-                    except Exception as e:
-                        logger.warning(f"Error in baseline training batch: {str(e)}")
-                        continue
-            
-            # Evaluate baseline
-            if is_main_process():
-                logger.info("Evaluating trained baseline model...")
-            
-            baseline_metrics = evaluate_model_distributed(
-                baseline_model, eval_loader, config['device'], local_rank
-            )
-            
-            if is_main_process():
-                logger.info(f"Baseline performance: {baseline_metrics}")
+                    logits = outputs.logits.squeeze()
+                    if logits.dim() == 0:
+                        logits = logits.unsqueeze(0)
+                    
+                    loss = F.mse_loss(logits, batch['labels'])
                 
-        except Exception as e:
-            logger.error(f"Error training baseline: {str(e)}")
-            baseline_metrics = {'loss': 0, 'correlation': 0, 'mse': 0}
-        finally:
-            # Clean up
-            try:
-                del baseline_model
-                del optimizer
-                del scaler
-                torch.cuda.empty_cache()
-            except:
-                pass
+                scaler.scale(loss).backward()
+                
+                if (batch_idx + 1) % config['gradient_accumulation_steps'] == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                
+                if rank == 0:
+                    progress_bar.set_postfix({'loss': f"{loss.item():.4f}"})
+        
+        # Evaluate baseline
+        if is_main_process():
+            logger.info("Evaluating trained baseline model...")
+        
+        baseline_metrics = evaluate_model_distributed(
+            baseline_model, eval_loader, config['device'], local_rank
+        )
+        
+        if is_main_process():
+            logger.info(f"Baseline performance: {baseline_metrics}")
+        
+        # Clean up
+        del baseline_model
+        del optimizer
+        del scaler
+        torch.cuda.empty_cache()
         
         if dist.is_initialized():
             dist.barrier()
@@ -787,34 +895,60 @@ def main():
                 model = IRModelWithCheckpointing(copy.deepcopy(base_model))
                 model = model.to(config['device'])
                 
-                # Use memory-efficient pruning module
-                pruning_module = MemoryEfficientPruningModule(
-                    model=model,
-                    target_sparsity=target_sparsity,
-                    device=config['device']
+                # Create pruning configuration
+                pruning_config = PruningConfig(
+                    initial_sparsity=0.0,
+                    final_sparsity=target_sparsity,
+                    pruning_steps=config['pruning_steps'],
+                    pruning_frequency=config['pruning_frequency'],
+                    pruning_method=config['pruning_method'],
+                    learning_rate=config['learning_rate'],
+                    warmup_steps=int(len(train_loader) * config['warmup_ratio']),
+                    use_distillation=config['use_distillation'],
+                    distillation_alpha=config['distillation_alpha'],
+                    temperature=config['temperature'],
+                    circuit_preservation_weight=config['circuit_preservation_weight'],
+                    protect_critical_layers=config['protect_critical_layers'],
+                    gradient_accumulation_steps=config['gradient_accumulation_steps'],
+                    memory_efficient=True
                 )
                 
-                # Create masks
-                masks = pruning_module.create_masks_magnitude_based()
+                # FIXED: Always use gradual pruning
+                if USE_FIX_VALIDATION:
+                    # Use wrapper for gradual pruning with fix_validation
+                    pruning_module = GradualPruningWithVerification(
+                        model=model,
+                        config=pruning_config,
+                        importance_scores=importance_scores,
+                        device=config['device']
+                    )
+                    # Start with initial masks
+                    masks = pruning_module.update_and_create_masks()
+                else:
+                    # Use built-in gradual pruning module
+                    pruning_module = GradualPruningModule(
+                        model=model,
+                        config=pruning_config,
+                        importance_scores=importance_scores,
+                        circuits=circuits,
+                        device=config['device']
+                    )
+                    masks = pruning_module.masks
                 
-                # Verify initial sparsity
-                initial_sparsity = pruning_module.verify_sparsity()
+                # Verify initial setup
                 if is_main_process():
+                    initial_sparsity = pruning_module.verify_sparsity() if hasattr(pruning_module, 'verify_sparsity') else pruning_module.get_sparsity()
                     logger.info(f"Initial sparsity: {initial_sparsity:.2%}")
                 
                 # Create teacher model for distillation
                 teacher_model = None
                 if config['use_distillation']:
-                    try:
-                        teacher_model = IRModelWithCheckpointing(copy.deepcopy(base_model))
-                        teacher_model = teacher_model.to(config['device'])
-                        teacher_model.eval()
-                        
-                        if world_size > 1:
-                            teacher_model = DDP(teacher_model, device_ids=[local_rank], output_device=local_rank)
-                    except Exception as e:
-                        logger.warning(f"Could not create teacher model: {str(e)}")
-                        teacher_model = None
+                    teacher_model = IRModelWithCheckpointing(copy.deepcopy(base_model))
+                    teacher_model = teacher_model.to(config['device'])
+                    teacher_model.eval()
+                    
+                    if world_size > 1:
+                        teacher_model = DDP(teacher_model, device_ids=[local_rank], output_device=local_rank)
                 
                 # Wrap model in DDP
                 if world_size > 1:
@@ -840,12 +974,13 @@ def main():
                 
                 scaler = GradScaler()
                 
-                # Training loop
+                # Training loop with gradual pruning
                 if is_main_process():
-                    logger.info("Training with pruning masks...")
+                    logger.info("Training with gradual pruning...")
                 
                 best_score = -float('inf')
                 best_model_state = None
+                global_step = 0
                 
                 for epoch in range(config['num_epochs']):
                     if train_sampler:
@@ -858,70 +993,85 @@ def main():
                     progress_bar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}", disable=rank != 0)
                     
                     for batch_idx, batch in enumerate(progress_bar):
-                        try:
-                            batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
-                                    for k, v in batch.items()}
+                        # FIXED: Always update pruning masks gradually
+                        if global_step % config['pruning_frequency'] == 0 and global_step > 0:
+                            if USE_FIX_VALIDATION:
+                                # Update masks with new sparsity level
+                                masks = pruning_module.update_and_create_masks()
+                            else:
+                                # Update sparsity level
+                                new_sparsity = pruning_module.update_sparsity()
+                                # Create new masks with updated sparsity
+                                masks = pruning_module.create_masks_with_importance()
                             
-                            with autocast():
-                                outputs = model(
-                                    input_ids=batch['input_ids'],
-                                    attention_mask=batch['attention_mask']
-                                )
-                                
-                                logits = outputs.logits.squeeze() if hasattr(outputs, 'logits') else outputs[0].squeeze()
-                                
-                                if logits.dim() == 0:
-                                    logits = logits.unsqueeze(0)
-                                if batch['labels'].dim() == 0:
-                                    batch['labels'] = batch['labels'].unsqueeze(0)
-                                
-                                task_loss = F.mse_loss(logits, batch['labels'])
-                                
-                                distill_loss = 0
-                                if teacher_model and config['use_distillation']:
-                                    try:
-                                        with torch.no_grad():
-                                            teacher_outputs = teacher_model(
-                                                input_ids=batch['input_ids'],
-                                                attention_mask=batch['attention_mask']
-                                            )
-                                            teacher_logits = teacher_outputs.logits.squeeze()
-                                            if teacher_logits.dim() == 0:
-                                                teacher_logits = teacher_logits.unsqueeze(0)
-                                        
-                                        distill_loss = F.mse_loss(logits, teacher_logits)
-                                    except Exception as e:
-                                        logger.warning(f"Distillation error: {str(e)}")
-                                        distill_loss = 0
-                                
-                                if config['use_distillation'] and distill_loss > 0:
-                                    total_loss = (1 - 0.5) * task_loss + 0.5 * distill_loss
-                                else:
-                                    total_loss = task_loss
+                            # Update optimizer masks
+                            optimizer.masks = masks
                             
-                            scaler.scale(total_loss).backward()
+                            if is_main_process() and global_step % (config['pruning_frequency'] * 5) == 0:
+                                current_sparsity = pruning_module.verify_sparsity() if hasattr(pruning_module, 'verify_sparsity') else pruning_module.get_sparsity()
+                                logger.info(f"Step {global_step}: Sparsity = {current_sparsity:.2%}")
+                        
+                        batch = {k: v.to(config['device']) if torch.is_tensor(v) else v 
+                                for k, v in batch.items()}
+                        
+                        with autocast():
+                            outputs = model(
+                                input_ids=batch['input_ids'],
+                                attention_mask=batch['attention_mask']
+                            )
                             
-                            if (batch_idx + 1) % config['gradient_accumulation_steps'] == 0:
-                                scaler.unscale_(optimizer)
-                                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                                
-                                scaler.step(optimizer)
-                                scaler.update()
-                                scheduler.step()
-                                optimizer.zero_grad()
-                                
-                                pruning_module.enforce_masks()
+                            logits = outputs.logits.squeeze() if hasattr(outputs, 'logits') else outputs[0].squeeze()
                             
-                            if rank == 0:
-                                current_sparsity = pruning_module.verify_sparsity()
-                                progress_bar.set_postfix({
-                                    'loss': f"{total_loss.item():.4f}",
-                                    'sparsity': f"{current_sparsity:.1%}",
-                                    'lr': f"{scheduler.get_last_lr()[0]:.2e}"
-                                })
-                        except Exception as e:
-                            logger.warning(f"Error in training batch: {str(e)}")
-                            continue
+                            if logits.dim() == 0:
+                                logits = logits.unsqueeze(0)
+                            if batch['labels'].dim() == 0:
+                                batch['labels'] = batch['labels'].unsqueeze(0)
+                            
+                            task_loss = F.mse_loss(logits, batch['labels'])
+                            
+                            distill_loss = 0
+                            if teacher_model and config['use_distillation']:
+                                with torch.no_grad():
+                                    teacher_outputs = teacher_model(
+                                        input_ids=batch['input_ids'],
+                                        attention_mask=batch['attention_mask']
+                                    )
+                                    teacher_logits = teacher_outputs.logits.squeeze()
+                                    if teacher_logits.dim() == 0:
+                                        teacher_logits = teacher_logits.unsqueeze(0)
+                                
+                                # FIXED: Use MSE for distillation (not KL div for regression)
+                                distill_loss = F.mse_loss(logits, teacher_logits)
+                            
+                            if config['use_distillation'] and distill_loss > 0:
+                                total_loss = (1 - config['distillation_alpha']) * task_loss + config['distillation_alpha'] * distill_loss
+                            else:
+                                total_loss = task_loss
+                        
+                        scaler.scale(total_loss).backward()
+                        
+                        if (batch_idx + 1) % config['gradient_accumulation_steps'] == 0:
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                            
+                            scaler.step(optimizer)
+                            scaler.update()
+                            scheduler.step()
+                            optimizer.zero_grad()
+                            
+                            # Enforce masks after optimization
+                            pruning_module.enforce_masks()
+                            
+                            global_step += 1
+                        
+                        if rank == 0:
+                            current_sparsity = pruning_module.verify_sparsity() if hasattr(pruning_module, 'verify_sparsity') else pruning_module.get_sparsity()
+                            
+                            progress_bar.set_postfix({
+                                'loss': f"{total_loss.item():.4f}",
+                                'sparsity': f"{current_sparsity:.1%}",
+                                'lr': f"{scheduler.get_last_lr()[0]:.2e}"
+                            })
                     
                     # Evaluation
                     eval_metrics = evaluate_model_distributed(
@@ -929,10 +1079,12 @@ def main():
                     )
                     
                     if is_main_process():
+                        current_sparsity = pruning_module.verify_sparsity() if hasattr(pruning_module, 'verify_sparsity') else pruning_module.get_sparsity()
+                        
                         logger.info(f"Epoch {epoch + 1} - Eval: "
                                    f"Loss: {eval_metrics['loss']:.4f}, "
                                    f"Correlation: {eval_metrics['correlation']:.4f}, "
-                                   f"Sparsity: {pruning_module.verify_sparsity():.1%}")
+                                   f"Sparsity: {current_sparsity:.1%}")
                         
                         # Save best model
                         if eval_metrics['correlation'] > best_score:
@@ -981,23 +1133,12 @@ def main():
                     model_path = config['output_dir'] / 'models' / f'pruned_{int(target_sparsity*100)}.pt'
                     model_to_save = model.module if hasattr(model, 'module') else model
                     
-                    # Create pruning config dict
-                    pruning_config_dict = {
-                        'target_sparsity': target_sparsity,
-                        'pruning_method': config['pruning_method'],
-                        'learning_rate': config['learning_rate'],
-                        'num_epochs': config['num_epochs']
-                    }
-                    
-                    try:
-                        torch.save({
-                            'model_state': model_to_save.state_dict(),
-                            'config': pruning_config_dict,
-                            'metrics': final_metrics,
-                            'actual_sparsity': actual_sparsity
-                        }, model_path)
-                    except Exception as e:
-                        logger.error(f"Error saving model: {str(e)}")
+                    torch.save({
+                        'model_state': model_to_save.state_dict(),
+                        'config': pruning_config.__dict__,
+                        'metrics': final_metrics,
+                        'actual_sparsity': actual_sparsity
+                    }, model_path)
                     
                     # Log results
                     logger.info(f"\nResults for {target_sparsity:.0%} sparsity:")
@@ -1008,12 +1149,23 @@ def main():
                     logger.info(f"  Retention: {retention:.2%}")
                     logger.info(f"  Model saved to: {model_path}")
                 
+                # Clean up
+                del model
+                del pruning_module
+                if teacher_model:
+                    del teacher_model
+                torch.cuda.empty_cache()
+                
+                # Synchronize before next experiment
+                if dist.is_initialized():
+                    dist.barrier()
+                
             except Exception as e:
                 if is_main_process():
                     logger.error(f"Experiment failed for {target_sparsity:.0%} sparsity:")
                     logger.error(str(e))
                     logger.error(traceback.format_exc())
-            finally:
+                
                 # Ensure cleanup even on error
                 try:
                     del model
@@ -1029,38 +1181,33 @@ def main():
                     pass
                 torch.cuda.empty_cache()
                 
-                # Synchronize before next experiment
-                if dist.is_initialized():
-                    dist.barrier()
+                continue
         
         # Save all results (only on main process)
         if is_main_process():
-            try:
-                results_path = config['output_dir'] / 'metrics' / 'pruning_results.json'
-                with open(results_path, 'w') as f:
-                    json.dump(all_results, f, indent=2, default=str)
-                
-                # Print summary
-                logger.info("\n" + "="*60)
-                logger.info("PRUNING EXPERIMENTS COMPLETE")
-                logger.info("="*60)
-                
-                logger.info("\nSummary of Results:")
-                logger.info(f"{'Sparsity':<12} {'Actual':<12} {'Baseline':<12} {'Pruned':<12} {'Retention':<12}")
-                logger.info("-" * 60)
-                
-                for exp_name, exp_data in all_results['experiments'].items():
-                    logger.info(
-                        f"{exp_data['target_sparsity']:<12.0%} "
-                        f"{exp_data['actual_sparsity']:<12.2%} "
-                        f"{exp_data['baseline_correlation']:<12.4f} "
-                        f"{exp_data['pruned_correlation']:<12.4f} "
-                        f"{exp_data['retention']:<12.2%}"
-                    )
-                
-                logger.info(f"\nResults saved to: {results_path}")
-            except Exception as e:
-                logger.error(f"Error saving final results: {str(e)}")
+            results_path = config['output_dir'] / 'metrics' / 'pruning_results.json'
+            with open(results_path, 'w') as f:
+                json.dump(all_results, f, indent=2, default=str)
+            
+            # Print summary
+            logger.info("\n" + "="*60)
+            logger.info("PRUNING EXPERIMENTS COMPLETE")
+            logger.info("="*60)
+            
+            logger.info("\nSummary of Results:")
+            logger.info(f"{'Sparsity':<12} {'Actual':<12} {'Baseline':<12} {'Pruned':<12} {'Retention':<12}")
+            logger.info("-" * 60)
+            
+            for exp_name, exp_data in all_results['experiments'].items():
+                logger.info(
+                    f"{exp_data['target_sparsity']:<12.0%} "
+                    f"{exp_data['actual_sparsity']:<12.2%} "
+                    f"{exp_data['baseline_correlation']:<12.4f} "
+                    f"{exp_data['pruned_correlation']:<12.4f} "
+                    f"{exp_data['retention']:<12.2%}"
+                )
+            
+            logger.info(f"\nResults saved to: {results_path}")
         
     except Exception as e:
         if is_main_process():
