@@ -83,8 +83,8 @@ class FixedPruningConfig:
     def __init__(self, 
                  initial_sparsity=0.0,
                  final_sparsity=0.5,
-                 pruning_steps=100,  # More aggressive (was 200)
-                 pruning_frequency=38,  # More frequent (was 15)
+                 pruning_steps=160,  # More aggressive (was 200)
+                 pruning_frequency=20,  # More frequent (was 15)
                  pruning_method='magnitude',
                  learning_rate=2e-5,
                  warmup_steps=100,
@@ -677,8 +677,8 @@ def main():
             'prefetch_factor': 2,
             'pin_memory': True,
             # FIXED PRUNING SETTINGS
-            'pruning_steps': 100,  # More aggressive (was 200)
-            'pruning_frequency': 38,  # More frequent (was 15)
+            'pruning_steps': 160,  # More aggressive (was 200)
+            'pruning_frequency': 20,  # More frequent (was 15)
             'circuit_preservation_weight': 2.0,  # Reasonable protection
             'protect_critical_layers': [1, 2, 3, 4, 5, 6, 7, 8],  # Fixed: middle layers
             'distillation_alpha': 0.4,  # Proper balance
