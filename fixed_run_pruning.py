@@ -1,6 +1,6 @@
 """
 Multi-GPU Pruning Script with Distributed Training - FULLY FIXED VERSION
-All critical bugs resolved: sparsity calculation, layer protection, gradual pruning
+All critical bugs resolved: sparsity calculation, layer protection, gradual pruning, logger scoping
 Run with: torchrun --nproc_per_node=4 run_pruning.py
 """
 
@@ -29,6 +29,14 @@ import sys
 import os
 import warnings
 warnings.filterwarnings('ignore')
+
+# ============= GLOBAL LOGGER SETUP =============
+def get_logger():
+    """Get or create a logger instance"""
+    return logging.getLogger(__name__)
+
+# Initialize basic logger early
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # ============= TRY TO IMPORT MODULES =============
 try:
@@ -117,10 +125,11 @@ class FixedGradualPruningModule:
         self.masks = {}
         self.current_sparsity = config.initial_sparsity
         self.pruning_step = 0
+        self.logger = get_logger()  # FIXED: Get logger instance
         
         # Initialize masks to all ones (no pruning initially)
         self._initialize_masks()
-        logger.info(f"Initialized gradual pruning: {config.initial_sparsity:.1%} → {config.final_sparsity:.1%}")
+        self.logger.info(f"Initialized gradual pruning: {config.initial_sparsity:.1%} → {config.final_sparsity:.1%}")
     
     def _initialize_masks(self):
         """Initialize all masks to ones (no pruning)"""
@@ -143,14 +152,14 @@ class FixedGradualPruningModule:
         
         self.pruning_step += 1
         
-        logger.info(f"Pruning step {self.pruning_step}: Target sparsity {self.current_sparsity:.2%}")
+        self.logger.info(f"Pruning step {self.pruning_step}: Target sparsity {self.current_sparsity:.2%}")
         
         # Create new masks with updated sparsity
         self._create_masks_with_importance()
         
         # Verify actual sparsity
         actual = calculate_actual_sparsity(self.model)
-        logger.info(f"  Actual sparsity after masking: {actual:.2%}")
+        self.logger.info(f"  Actual sparsity after masking: {actual:.2%}")
         
         return self.masks
     
@@ -183,7 +192,7 @@ class FixedGradualPruningModule:
         
         # Find global threshold
         if not all_weights:
-            logger.warning("No weights found for pruning!")
+            self.logger.warning("No weights found for pruning!")
             return
         
         all_weights = torch.cat(all_weights)
@@ -200,7 +209,7 @@ class FixedGradualPruningModule:
         threshold_idx = int(len(sorted_weights) * self.current_sparsity)
         threshold = sorted_weights[threshold_idx].item()
         
-        logger.info(f"  Global threshold: {threshold:.6f}")
+        self.logger.info(f"  Global threshold: {threshold:.6f}")
         
         # Apply threshold to create masks
         total_params = 0
@@ -233,7 +242,7 @@ class FixedGradualPruningModule:
             pruned_params += pruned
         
         actual_sparsity = pruned_params / total_params if total_params > 0 else 0
-        logger.info(f"  Target: {self.current_sparsity:.2%}, Achieved: {actual_sparsity:.2%}")
+        self.logger.info(f"  Target: {self.current_sparsity:.2%}, Achieved: {actual_sparsity:.2%}")
     
     def _get_importance_score(self, param_name: str) -> float:
         """Get importance score for a parameter"""
@@ -270,7 +279,7 @@ class FixedGradualPruningModule:
                 enforced += 1
         
         if enforced > 0:
-            logger.debug(f"Enforced {enforced} masks")
+            self.logger.debug(f"Enforced {enforced} masks")
     
     def get_current_sparsity(self) -> float:
         """Get current target sparsity"""
@@ -296,6 +305,7 @@ class GradualPruningWithVerification:
         self.importance_scores = importance_scores
         self.current_sparsity = config.initial_sparsity
         self.pruning_step = 0
+        self.logger = get_logger()  # FIXED: Get logger instance
         
         # Use the fixed gradual pruning module
         self.base_module = FixedGradualPruningModule(
@@ -316,6 +326,10 @@ class GradualPruningWithVerification:
     def verify_sparsity(self):
         """Get current sparsity"""
         return self.base_module.verify_sparsity()
+    
+    def get_current_sparsity(self):
+        """Get current target sparsity"""
+        return self.base_module.get_current_sparsity()
 
 
 # ============= FIXED MASKED ADAM OPTIMIZER =============
@@ -326,6 +340,7 @@ class MaskedAdam(torch.optim.Adam):
         super().__init__(params, lr=lr, **kwargs)
         self.masks = masks or {}
         self.enforce_count = 0
+        self.logger = get_logger()  # FIXED: Get logger instance
         
     def step(self, closure=None):
         """Perform optimization step with guaranteed mask enforcement"""
@@ -350,9 +365,8 @@ class MaskedAdam(torch.optim.Adam):
             
             self.enforce_count += 1
             if self.enforce_count % 100 == 0 and enforced > 0:
-                logger.debug(f"Enforced masks on {enforced} parameters")
+                self.logger.debug(f"Enforced masks on {enforced} parameters")
         
-
 
 # ============= DISTRIBUTED TRAINING SETUP =============
 
@@ -388,15 +402,23 @@ def is_main_process():
 def setup_logging(rank):
     """Setup logging for distributed training"""
     level = logging.INFO if rank == 0 else logging.WARNING
+    
+    # Clear existing handlers
+    logger = logging.getLogger(__name__)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # Set up new handlers
     logging.basicConfig(
         level=level,
         format=f'[Rank {rank}] %(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(f'pruning_rank_{rank}.log'),
             logging.StreamHandler() if rank == 0 else logging.NullHandler()
-        ]
+        ],
+        force=True  # Override existing configuration
     )
-    return logging.getLogger(__name__)
+    return logger
 
 
 # ============= MODEL AND DATA CLASSES =============
@@ -631,7 +653,7 @@ def evaluate_model_distributed(model, eval_loader, device, local_rank):
 def main():
     # Setup distributed training
     rank, world_size, local_rank = setup_distributed()
-    logger = setup_logging(rank)
+    logger = setup_logging(rank)  # This creates the logger for main
     
     try:
         # Configuration with FIXED pruning settings
@@ -871,7 +893,8 @@ def main():
                 'linear_pruning_schedule',
                 'fixed_layer_protection',
                 'enhanced_mask_enforcement',
-                'proper_importance_weighting'
+                'proper_importance_weighting',
+                'logger_scoping_fix'
             ]
         }
         
@@ -1237,6 +1260,7 @@ def main():
                 logger.error("❌ FIXES STILL INCOMPLETE: Further debugging needed.")
         
     except Exception as e:
+        logger = get_logger()  # Ensure logger exists even in exception handler
         if is_main_process():
             logger.critical(f"Critical error in main execution:")
             logger.critical(str(e))
