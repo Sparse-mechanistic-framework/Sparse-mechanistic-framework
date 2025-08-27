@@ -67,7 +67,7 @@ if not USE_ADVANCED:
                      warmup_steps=100,
                      use_distillation=True,
                      distillation_alpha=0.5,
-                     temperature=5.0,
+                     temperature=6.0,
                      circuit_preservation_weight=2.0,  # Increased protection
                      protect_critical_layers=None,
                      gradient_accumulation_steps=1,
@@ -689,7 +689,7 @@ def main():
             'circuit_preservation_weight': 2.0,  # Stronger protection
             'protect_critical_layers': [2, 3, 4, 5, 6, 7, 8],  # Fixed layers
             'distillation_alpha': 0.5,  # More weight on distillation
-            'temperature': 5.0,  # Softer distillation
+            'temperature': 6.0,  # Softer distillation
         }
         
         if is_main_process():
