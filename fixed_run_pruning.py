@@ -89,7 +89,7 @@ class FixedPruningConfig:
                  learning_rate=2e-5,
                  warmup_steps=100,
                  use_distillation=True,
-                 distillation_alpha=0.6,  # More weight on distillation
+                 distillation_alpha=0.4,  # More weight on distillation
                  temperature=6.0,  # Softer distillation
                  circuit_preservation_weight=2.0,  # Reasonable protection
                  protect_critical_layers=None,
@@ -681,7 +681,7 @@ def main():
             'pruning_frequency': 38,  # More frequent (was 15)
             'circuit_preservation_weight': 2.0,  # Reasonable protection
             'protect_critical_layers': [1, 2, 3, 4, 5, 6, 7, 8],  # Fixed: middle layers
-            'distillation_alpha': 0.6,  # Proper balance
+            'distillation_alpha': 0.4,  # Proper balance
             'temperature': 6.0,
         }
         
