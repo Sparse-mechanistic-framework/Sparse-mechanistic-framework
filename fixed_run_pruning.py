@@ -59,9 +59,9 @@ if not USE_ADVANCED:
     class PruningConfig:
         def __init__(self, 
                      initial_sparsity=0.0,
-                     final_sparsity=0.5,
+                     final_sparsity=0.9,
                      pruning_steps=150,  # Increased for more gradual
-                     pruning_frequency=15,  # More frequent updates
+                     pruning_frequency=25,  # More frequent updates
                      pruning_method='magnitude',
                      learning_rate=2e-5,
                      warmup_steps=100,
@@ -331,7 +331,7 @@ class GradualPruningModule:
                 total_params += param.numel()
         
         actual_sparsity = zero_params / total_params if total_params > 0 else 0
-        logger.info(f"Target: {self.current_sparsity:.2%}, Actual: {actual_sparsity:.2%}")
+        logger.info(f"Target: {self.current_sparsity:.3%}, Actual: {actual_sparsity:.3%}")
         
         return self.masks
     
@@ -572,7 +572,7 @@ def process_importance_scores(phase1_data: Dict) -> Dict[str, float]:
                 layer_num = int(component.split('_')[1])
                 
                 # FIXED: Protect layers 2-8 which are most critical for BERT IR
-                if 2 <= layer_num <= 8:
+                if 2 <= layer_num <= 6:
                     importance = 0.85 + np.random.uniform(-0.05, 0.05)
                 elif layer_num <= 1:
                     importance = 0.6 + np.random.uniform(-0.1, 0.1)
@@ -685,7 +685,7 @@ def main():
             'pin_memory': True,
             # IMPROVED PRUNING SETTINGS
             'pruning_steps': 150,  # More gradual pruning
-            'pruning_frequency': 15,  # More frequent updates
+            'pruning_frequency': 25,  # More frequent updates
             'circuit_preservation_weight': 2.5,  # Stronger protection
             'protect_critical_layers': [2, 3, 4, 5, 6, 7, 8],  # Fixed layers
             'distillation_alpha': 0.6,  # More weight on distillation
