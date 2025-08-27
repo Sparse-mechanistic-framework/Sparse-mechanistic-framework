@@ -90,7 +90,7 @@ class FixedPruningConfig:
                  warmup_steps=100,
                  use_distillation=True,
                  distillation_alpha=0.6,  # More weight on distillation
-                 temperature=4.0,  # Softer distillation
+                 temperature=6.0,  # Softer distillation
                  circuit_preservation_weight=2.0,  # Reasonable protection
                  protect_critical_layers=None,
                  gradient_accumulation_steps=1,
@@ -682,7 +682,7 @@ def main():
             'circuit_preservation_weight': 2.0,  # Reasonable protection
             'protect_critical_layers': [4, 5, 6, 7, 8, 9],  # Fixed: middle layers
             'distillation_alpha': 0.6,  # Proper balance
-            'temperature': 4.0,
+            'temperature': 6.0,
         }
         
         if is_main_process():
