@@ -48,10 +48,10 @@ config = {
     'warmup_ratio': 0.1,
     'output_dir': Path('./pruning_results_fixed'),
     'phase1_dir': Path('./phase1_results'),
-    'max_samples': 5000,
+    'max_samples': 6000,
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
-    'protect_layers': [2, 3, 4, 5, 6, 7],  # Critical layers from analysis
+    'protect_layers': [2, 3, 4, 5, 6],  # Critical layers from analysis
 }
 
 # ============= IR MODEL =============
@@ -76,7 +76,7 @@ class IRModel(nn.Module):
 
 # ============= DATASET =============
 class NFCorpusDataset(Dataset):
-    def __init__(self, split='test', max_samples=5000, tokenizer=None, max_length=256):
+    def __init__(self, split='test', max_samples=9000, tokenizer=None, max_length=256):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.data = self._load_data(split, max_samples)
@@ -91,8 +91,8 @@ class NFCorpusDataset(Dataset):
         
         try:
             # Load from HuggingFace
-            corpus_data = load_dataset("BeIR/nfcorpus", "corpus", split="corpus")
-            queries_data = load_dataset("BeIR/nfcorpus", "queries", split="queries")
+            corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
+            queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
             
             # Process into samples
             processed_data = []
