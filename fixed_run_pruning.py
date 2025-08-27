@@ -2,6 +2,7 @@
 Updated Fixed Run Pruning Script
 One-shot pruning (not gradual) with four baseline methods
 Based on multi-GPU script optimizations
+Updated with proper NFCorpus dataset handling
 """
 
 import torch
@@ -35,6 +36,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def is_main_process():
+    """Check if this is the main process (for distributed training compatibility)"""
+    return True  # Single process for now
+
 # ============= CONFIGURATION =============
 config = {
     'model_name': 'bert-base-uncased',
@@ -48,7 +53,7 @@ config = {
     'warmup_ratio': 0.1,
     'output_dir': Path('./pruning_results_fixed'),
     'phase1_dir': Path('./phase1_results'),
-    'max_samples': 6000,
+    'max_samples': 6000,  # Updated to 6000
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
     'protect_layers': [2, 3, 4, 5, 6],  # Critical layers from analysis
@@ -76,50 +81,128 @@ class IRModel(nn.Module):
 
 # ============= DATASET =============
 class NFCorpusDataset(Dataset):
-    def __init__(self, split='test', max_samples=9000, tokenizer=None, max_length=256):
+    def __init__(self, split='test', max_samples=6000, cache_dir='./cache', tokenizer=None, max_length=256):
+        self.split = split
+        self.max_samples = max_samples
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.data = self._load_data(split, max_samples)
-        
-    def _load_data(self, split, max_samples):
-        cache_file = Path('./cache') / f'nfcorpus_{split}_data.pkl'
-        cache_file.parent.mkdir(exist_ok=True)
+        self.data = self._load_data()
+    
+    def _load_data(self):
+        cache_file = self.cache_dir / f'nfcorpus_{self.split}_v3.pkl'
         
         if cache_file.exists():
             with open(cache_file, 'rb') as f:
-                return pickle.load(f)[:max_samples]
+                cached_data = pickle.load(f)
+                if len(cached_data) >= self.max_samples:
+                    return cached_data[:self.max_samples]
         
-        try:
-            # Load from HuggingFace
-            corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
-            queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
+        # Only main process downloads data
+        if is_main_process():
+            print("Loading NFCorpus from HuggingFace datasets...")
             
-            # Process into samples
-            processed_data = []
-            for i in range(min(max_samples, len(queries_data))):
-                query = queries_data[i].get('text', '')
-                # Random document for simplicity
-                doc_idx = np.random.randint(0, len(corpus_data))
-                doc = corpus_data[doc_idx].get('text', '')[:2000]
+            try:
+                # Load corpus documents
+                corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
+                corpus = {}
+                for item in corpus_data:
+                    doc_id = item['_id'] if '_id' in item else item.get('id', str(len(corpus)))
+                    text = item.get('text', '')
+                    title = item.get('title', '')
+                    corpus[doc_id] = f"{title} {text}".strip()
                 
-                processed_data.append({
-                    'query': query,
-                    'document': doc,
-                    'relevance': np.random.random()  # Simulated
-                })
-            
-            with open(cache_file, 'wb') as f:
-                pickle.dump(processed_data, f)
+                # Load queries
+                queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
+                queries = {}
+                for item in queries_data:
+                    query_id = item['_id'] if '_id' in item else item.get('id', str(len(queries)))
+                    queries[query_id] = item.get('text', '')
                 
-            return processed_data[:max_samples]
+                # Load relevance judgments (qrels)
+                qrels_data = load_dataset("mteb/nfcorpus", "default", split=self.split)
+                
+                processed_data = []
+                count = 0
+                
+                # Process qrels data to create query-document pairs
+                for item in qrels_data:
+                    if count >= self.max_samples:
+                        break
+                    
+                    query_id = item.get('query-id', '')
+                    corpus_id = item.get('corpus-id', '')
+                    score = item.get('score', 0)
+                    
+                    # Get query and document text
+                    query_text = queries.get(query_id, '')
+                    doc_text = corpus.get(corpus_id, '')
+                    
+                    if query_text and doc_text:
+                        processed_data.append({
+                            'query': query_text,
+                            'document': doc_text[:500],  # Truncate document
+                            'relevance': float(score),
+                            'query_id': query_id,
+                            'doc_id': corpus_id
+                        })
+                        count += 1
+                
+                # If we still need more samples, create additional combinations
+                if len(processed_data) < self.max_samples:
+                    logger.info(f"Got {len(processed_data)} samples from qrels, generating additional samples to reach {self.max_samples}")
+                    
+                    # Get all available queries and documents
+                    all_queries = list(queries.items())
+                    all_docs = list(corpus.items())
+                    
+                    while len(processed_data) < self.max_samples:
+                        # Randomly select query and document
+                        query_id, query_text = all_queries[np.random.randint(0, len(all_queries))]
+                        doc_id, doc_text = all_docs[np.random.randint(0, len(all_docs))]
+                        
+                        processed_data.append({
+                            'query': query_text,
+                            'document': doc_text[:500],
+                            'relevance': np.random.random(),  # Random relevance for synthetic pairs
+                            'query_id': query_id,
+                            'doc_id': doc_id
+                        })
+                
+                # Shuffle for variety
+                np.random.shuffle(processed_data)
+                
+                # Save to cache
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(processed_data, f)
+                
+                logger.info(f"Created {len(processed_data)} query-document pairs")
+                return processed_data[:self.max_samples]
             
-        except Exception as e:
-            logger.warning(f"Failed to load NFCorpus: {e}. Using synthetic data.")
-            # Synthetic fallback
-            return [{'query': f'query {i}', 
-                    'document': f'document {i}',
-                    'relevance': np.random.random()} 
-                   for i in range(max_samples)]
+            except Exception as e:
+                logger.warning(f"Failed to load NFCorpus: {e}. Using synthetic data.")
+                # Synthetic fallback
+                return [{'query': f'query {i}', 
+                        'document': f'document {i}',
+                        'relevance': np.random.random(),
+                        'query_id': f'q{i}',
+                        'doc_id': f'd{i}'} 
+                       for i in range(self.max_samples)]
+        
+        # Wait for main process to finish (for distributed training)
+        # For single process, just load the cache
+        if cache_file.exists():
+            with open(cache_file, 'rb') as f:
+                return pickle.load(f)[:self.max_samples]
+        
+        # Fallback
+        return [{'query': f'query {i}', 
+                'document': f'document {i}',
+                'relevance': np.random.random(),
+                'query_id': f'q{i}',
+                'doc_id': f'd{i}'} 
+               for i in range(self.max_samples)]
     
     def __len__(self):
         return len(self.data)
