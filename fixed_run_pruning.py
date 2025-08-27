@@ -60,14 +60,14 @@ if not USE_ADVANCED:
         def __init__(self, 
                      initial_sparsity=0.0,
                      final_sparsity=0.5,
-                     pruning_steps=200,  # Increased for more gradual
+                     pruning_steps=150,  # Increased for more gradual
                      pruning_frequency=15,  # More frequent updates
                      pruning_method='magnitude',
                      learning_rate=2e-5,
                      warmup_steps=100,
                      use_distillation=True,
-                     distillation_alpha=0.5,
-                     temperature=5.0,
+                     distillation_alpha=0.6,
+                     temperature=4.0,
                      circuit_preservation_weight=2.5,  # Increased protection
                      protect_critical_layers=None,
                      gradient_accumulation_steps=1,
@@ -259,7 +259,7 @@ class GradualPruningModule:
     def create_masks_with_importance(self):
         """Create masks considering importance scores and circuit preservation"""
         logger = logging.getLogger(__name__)
-        logger.info(f"Creating masks for {self.current_sparsity:.1%} sparsity (step {self.pruning_step})")
+        logger.info(f"Creating masks for {self.current_sparsity:.2%} sparsity (step {self.pruning_step})")
         
         all_weights = []
         
@@ -331,7 +331,7 @@ class GradualPruningModule:
                 total_params += param.numel()
         
         actual_sparsity = zero_params / total_params if total_params > 0 else 0
-        logger.info(f"Target: {self.current_sparsity:.1%}, Actual: {actual_sparsity:.1%}")
+        logger.info(f"Target: {self.current_sparsity:.2%}, Actual: {actual_sparsity:.2%}")
         
         return self.masks
     
@@ -684,7 +684,7 @@ def main():
             'prefetch_factor': 2,
             'pin_memory': True,
             # IMPROVED PRUNING SETTINGS
-            'pruning_steps': 200,  # More gradual pruning
+            'pruning_steps': 150,  # More gradual pruning
             'pruning_frequency': 15,  # More frequent updates
             'circuit_preservation_weight': 2.5,  # Stronger protection
             'protect_critical_layers': [2, 3, 4, 5, 6, 7, 8],  # Fixed layers
