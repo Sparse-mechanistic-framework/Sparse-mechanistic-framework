@@ -52,7 +52,7 @@ class VerifiedPruningModule:
         self.hooks = []
         self.current_sparsity = 0.0
         
-    def create_masks_magnitude_based(self, sample_rate=0.3):
+    def create_masks_magnitude_based(self, sample_rate=0.2):
         """
         Create masks using memory-efficient sampling approach
         
