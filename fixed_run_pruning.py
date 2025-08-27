@@ -680,7 +680,7 @@ def main():
             'pruning_steps': 100,  # More aggressive (was 200)
             'pruning_frequency': 38,  # More frequent (was 15)
             'circuit_preservation_weight': 2.0,  # Reasonable protection
-            'protect_critical_layers': [1, 2, 3, 4, 5, 6, 7, 8]  # Fixed: middle layers
+            'protect_critical_layers': [1, 2, 3, 4, 5, 6, 7, 8],  # Fixed: middle layers
             'distillation_alpha': 0.6,  # Proper balance
             'temperature': 6.0,
         }
