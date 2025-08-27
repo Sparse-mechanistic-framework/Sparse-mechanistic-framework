@@ -2,7 +2,6 @@
 Updated Fixed Run Pruning Script
 One-shot pruning (not gradual) with four baseline methods
 Based on multi-GPU script optimizations
-Updated with proper NFCorpus dataset handling
 """
 
 import torch
@@ -36,10 +35,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def is_main_process():
-    """Check if this is the main process (for distributed training compatibility)"""
-    return True  # Single process for now
-
 # ============= CONFIGURATION =============
 config = {
     'model_name': 'bert-base-uncased',
@@ -56,7 +51,8 @@ config = {
     'max_samples': 6000,  # Updated to 6000
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
-    'protect_layers': [2, 3, 4, 5, 6],  # Critical layers from analysis
+    'protect_layers': [2, 3, 4, 5, 6, 7],  # Critical layers from analysis
+    'dataset_split': 'test',  # Using default split
 }
 
 # ============= IR MODEL =============
@@ -89,120 +85,81 @@ class NFCorpusDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.data = self._load_data()
-    
+        
     def _load_data(self):
         cache_file = self.cache_dir / f'nfcorpus_{self.split}_v3.pkl'
         
         if cache_file.exists():
             with open(cache_file, 'rb') as f:
-                cached_data = pickle.load(f)
-                if len(cached_data) >= self.max_samples:
-                    return cached_data[:self.max_samples]
+                data = pickle.load(f)
+                return data[:self.max_samples] if self.max_samples else data
         
-        # Only main process downloads data
-        if is_main_process():
-            print("Loading NFCorpus from HuggingFace datasets...")
+        print("Loading NFCorpus from HuggingFace datasets...")
+        
+        try:
+            # Load corpus
+            corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
+            corpus = {}
+            for item in corpus_data:
+                doc_id = item['_id'] if '_id' in item else item.get('id', str(len(corpus)))
+                text = item.get('text', '')
+                title = item.get('title', '')
+                corpus[doc_id] = f"{title} {text}".strip()
             
-            try:
-                # Load corpus documents
-                corpus_data = load_dataset("mteb/nfcorpus", "corpus", split="corpus")
-                corpus = {}
-                for item in corpus_data:
-                    doc_id = item['_id'] if '_id' in item else item.get('id', str(len(corpus)))
-                    text = item.get('text', '')
-                    title = item.get('title', '')
-                    corpus[doc_id] = f"{title} {text}".strip()
+            # Load queries
+            queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
+            queries = {}
+            for item in queries_data:
+                query_id = item['_id'] if '_id' in item else item.get('id', str(len(queries)))
+                queries[query_id] = item.get('text', '')
+            
+            # Load qrels for the specified split
+            qrels_data = load_dataset("mteb/nfcorpus", "default", split=self.split)
+            
+            processed_data = []
+            count = 0
+            
+            for item in tqdm(qrels_data, desc=f"Processing {self.split} qrels"):
+                if self.max_samples and count >= self.max_samples:
+                    break
                 
-                # Load queries
-                queries_data = load_dataset("mteb/nfcorpus", "queries", split="queries")
-                queries = {}
-                for item in queries_data:
-                    query_id = item['_id'] if '_id' in item else item.get('id', str(len(queries)))
-                    queries[query_id] = item.get('text', '')
+                query_id = item.get('query-id') or item.get('query_id')
+                corpus_id = item.get('corpus-id') or item.get('corpus_id')
+                score = item.get('score', 0)
                 
-                # Load relevance judgments (qrels)
-                qrels_data = load_dataset("mteb/nfcorpus", "default", split=self.split)
-                
-                processed_data = []
-                count = 0
-                
-                # Process qrels data to create query-document pairs
-                for item in qrels_data:
-                    if count >= self.max_samples:
-                        break
-                    
-                    query_id = item.get('query-id', '')
-                    corpus_id = item.get('corpus-id', '')
-                    score = item.get('score', 0)
-                    
-                    # Get query and document text
-                    query_text = queries.get(query_id, '')
-                    doc_text = corpus.get(corpus_id, '')
+                if query_id and corpus_id:
+                    query_text = queries.get(query_id, "")
+                    doc_text = corpus.get(corpus_id, "")
                     
                     if query_text and doc_text:
+                        # Truncate document to manageable length
+                        doc_text = ' '.join(doc_text.split()[:500])
                         processed_data.append({
                             'query': query_text,
-                            'document': doc_text[:500],  # Truncate document
-                            'relevance': float(score),
+                            'document': doc_text,
+                            'relevance': float(score / 2.0),  # Normalize score
                             'query_id': query_id,
                             'doc_id': corpus_id
                         })
                         count += 1
-                
-                # If we still need more samples, create additional combinations
-                if len(processed_data) < self.max_samples:
-                    logger.info(f"Got {len(processed_data)} samples from qrels, generating additional samples to reach {self.max_samples}")
-                    
-                    # Get all available queries and documents
-                    all_queries = list(queries.items())
-                    all_docs = list(corpus.items())
-                    
-                    while len(processed_data) < self.max_samples:
-                        # Randomly select query and document
-                        query_id, query_text = all_queries[np.random.randint(0, len(all_queries))]
-                        doc_id, doc_text = all_docs[np.random.randint(0, len(all_docs))]
-                        
-                        processed_data.append({
-                            'query': query_text,
-                            'document': doc_text[:500],
-                            'relevance': np.random.random(),  # Random relevance for synthetic pairs
-                            'query_id': query_id,
-                            'doc_id': doc_id
-                        })
-                
-                # Shuffle for variety
-                np.random.shuffle(processed_data)
-                
-                # Save to cache
-                with open(cache_file, 'wb') as f:
-                    pickle.dump(processed_data, f)
-                
-                logger.info(f"Created {len(processed_data)} query-document pairs")
-                return processed_data[:self.max_samples]
             
-            except Exception as e:
-                logger.warning(f"Failed to load NFCorpus: {e}. Using synthetic data.")
-                # Synthetic fallback
-                return [{'query': f'query {i}', 
-                        'document': f'document {i}',
-                        'relevance': np.random.random(),
-                        'query_id': f'q{i}',
-                        'doc_id': f'd{i}'} 
-                       for i in range(self.max_samples)]
-        
-        # Wait for main process to finish (for distributed training)
-        # For single process, just load the cache
-        if cache_file.exists():
-            with open(cache_file, 'rb') as f:
-                return pickle.load(f)[:self.max_samples]
-        
-        # Fallback
-        return [{'query': f'query {i}', 
-                'document': f'document {i}',
-                'relevance': np.random.random(),
-                'query_id': f'q{i}',
-                'doc_id': f'd{i}'} 
-               for i in range(self.max_samples)]
+            # Save to cache
+            with open(cache_file, 'wb') as f:
+                pickle.dump(processed_data, f)
+            
+            logger.info(f"Loaded {len(processed_data)} samples from NFCorpus {self.split} split")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Failed to load NFCorpus: {str(e)}")
+            logger.warning("Using synthetic fallback data")
+            # Synthetic fallback
+            return [{'query': f'medical query {i}', 
+                    'document': f'medical document {i} with relevant content',
+                    'relevance': np.random.random(),
+                    'query_id': f'q_{i}',
+                    'doc_id': f'd_{i}'} 
+                   for i in range(min(100, self.max_samples or 100))]
     
     def __len__(self):
         return len(self.data)
@@ -497,9 +454,10 @@ def main():
     # Load dataset
     logger.info("Loading NFCorpus dataset...")
     dataset = NFCorpusDataset(
-        split='test',
-        max_samples=config['max_samples'],
-        tokenizer=tokenizer
+        split=config['dataset_split'],  # Using 'test' split from config
+        max_samples=config['max_samples'],  # Using 6000 samples
+        tokenizer=tokenizer,
+        cache_dir='./cache'
     )
     
     # Split dataset
