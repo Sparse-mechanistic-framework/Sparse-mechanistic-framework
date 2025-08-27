@@ -100,7 +100,7 @@ class NFCorpusDataset(Dataset):
                 query = queries_data[i].get('text', '')
                 # Random document for simplicity
                 doc_idx = np.random.randint(0, len(corpus_data))
-                doc = corpus_data[doc_idx].get('text', '')[:500]
+                doc = corpus_data[doc_idx].get('text', '')[:2000]
                 
                 processed_data.append({
                     'query': query,
