@@ -84,7 +84,7 @@ class FixedPruningConfig:
                  initial_sparsity=0.0,
                  final_sparsity=0.5,
                  pruning_steps=100,  # More aggressive (was 200)
-                 pruning_frequency=8,  # More frequent (was 15)
+                 pruning_frequency=38,  # More frequent (was 15)
                  pruning_method='magnitude',
                  learning_rate=2e-5,
                  warmup_steps=100,
@@ -107,7 +107,7 @@ class FixedPruningConfig:
         self.temperature = temperature
         self.circuit_preservation_weight = circuit_preservation_weight
         # FIXED: Protect middle layers which are most important for BERT IR
-        self.protect_critical_layers = protect_critical_layers or [4, 5, 6, 7, 8, 9]
+        self.protect_critical_layers = protect_critical_layers or [1, 2, 3, 4, 5, 6, 7, 8]
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.memory_efficient = memory_efficient
 
@@ -678,9 +678,9 @@ def main():
             'pin_memory': True,
             # FIXED PRUNING SETTINGS
             'pruning_steps': 100,  # More aggressive (was 200)
-            'pruning_frequency': 8,  # More frequent (was 15)
+            'pruning_frequency': 38,  # More frequent (was 15)
             'circuit_preservation_weight': 2.0,  # Reasonable protection
-            'protect_critical_layers': [4, 5, 6, 7, 8, 9],  # Fixed: middle layers
+            'protect_critical_layers': [1, 2, 3, 4, 5, 6, 7, 8]  # Fixed: middle layers
             'distillation_alpha': 0.6,  # Proper balance
             'temperature': 6.0,
         }
