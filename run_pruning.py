@@ -705,7 +705,7 @@ def main():
                     learning_rate=config['learning_rate'],
                     warmup_steps=int(len(train_loader) * config['warmup_ratio']),
                     use_distillation=config['use_distillation'],
-                    distillation_alpha=0.5,
+                    distillation_alpha=0.4,
                     temperature=6.0,
                     circuit_preservation_weight=2.0,
                     protect_critical_layers=[1, 2, 3, 4, 5],
@@ -1008,9 +1008,3 @@ def main():
 if __name__ == "__main__":
 
     main() 
-
-
-
-
-
-
