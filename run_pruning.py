@@ -480,7 +480,7 @@ def main():
             'use_distillation': True,  # Disable to save memory
             'pruning_method': 'magnitude',
             'max_samples': 4500,  # Increase dataset size for 4 GPUs
-            'baseline_epochs': 3,
+            'baseline_epochs': 4,
             'gradient_accumulation_steps': 2,  # Simulate larger batch
             'fp16': True,  # Enable mixed precision
             'num_workers': 2,  # DataLoader workers per GPU
@@ -700,7 +700,7 @@ def main():
                     initial_sparsity=0.0,
                     final_sparsity=target_sparsity,
                     pruning_steps=110,
-                    pruning_frequency=8,  # gradual schedule; increase for gentler pruning# t
+                    pruning_frequency=30,  # gradual schedule; increase for gentler pruning# t
                     pruning_method=config['pruning_method'],
                     learning_rate=config['learning_rate'],
                     warmup_steps=int(len(train_loader) * config['warmup_ratio']),
@@ -708,7 +708,7 @@ def main():
                     distillation_alpha=0.5,
                     temperature=6.0,
                     circuit_preservation_weight=2.0,
-                    protect_critical_layers=[1, 2, 3, 4, 5, 6, 7, 8],
+                    protect_critical_layers=[1, 2, 3, 4, 5],
                     gradient_accumulation_steps=config['gradient_accumulation_steps'],
                     memory_efficient=True
                 )
@@ -1008,6 +1008,7 @@ def main():
 if __name__ == "__main__":
 
     main() 
+
 
 
 
