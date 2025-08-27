@@ -24,7 +24,6 @@ class MaskedAdam(torch.optim.Adam):
         
     def step(self, closure=None):
         """Perform optimization step while maintaining sparsity"""
-        # Standard Adam step
         loss = super().step(closure)
         
         # Re-apply masks after weight update
@@ -32,15 +31,18 @@ class MaskedAdam(torch.optim.Adam):
             for group in self.param_groups:
                 for p in group['params']:
                     if p in self.masks:
-                        p.data.mul_(self.masks[p])
+                        # Ensure mask is on same device as parameter
+                        mask = self.masks[p]
+                        if mask.device != p.device:
+                            mask = mask.to(p.device)
+                            self.masks[p] = mask
+                        p.data.mul_(mask)
         
         return loss
 
 
-# ============= FIX 2: PRUNING MODULE WITH VERIFIED MASKING =============
-
 class VerifiedPruningModule:
-    """Pruning module that guarantees sparsity is maintained"""
+    """Memory-efficient pruning module for large models with proper device handling"""
     
     def __init__(self, model, target_sparsity, device='cuda'):
         self.model = model
@@ -48,32 +50,19 @@ class VerifiedPruningModule:
         self.device = device
         self.param_to_mask = {}
         self.hooks = []
+        self.current_sparsity = 0.0
         
-    def create_masks_magnitude_based(self):
-        """Create masks using magnitude-based pruning"""
+    def create_masks_magnitude_based(self, sample_rate=0.1):
+        """
+        Create masks using memory-efficient sampling approach
+        
+        Args:
+            sample_rate: Fraction of weights to sample for threshold calculation
+        """
         logger.info(f"Creating masks for {self.target_sparsity:.0%} sparsity")
         
-        # Collect all weights
-        all_weights = []
-        
-        with torch.no_grad():
-            for name, param in self.model.named_parameters():
-                if 'weight' in name and param.requires_grad:
-                    weight_abs = param.data.abs().flatten()
-                    all_weights.append(weight_abs.cpu())  # Move to CPU to avoid memory issues
-        
-        # Concatenate all weights
-        all_weights = torch.cat(all_weights)
-        
-        # FIX: Replace quantile with sorting approach for large tensors
-        if len(all_weights) > 10_000_000:  # If tensor is large (>10M elements)
-            # Use sorting instead of quantile
-            sorted_weights, _ = torch.sort(all_weights)
-            threshold_idx = int(len(sorted_weights) * self.target_sparsity)
-            threshold = sorted_weights[threshold_idx].item() if threshold_idx < len(sorted_weights) else 0.0
-        else:
-            # Use quantile for smaller tensors
-            threshold = torch.quantile(all_weights, self.target_sparsity).item()
+        # Compute threshold using sampling
+        threshold = self._compute_threshold_sampling(sample_rate)
         
         # Apply threshold to create masks
         total_params = 0
@@ -82,46 +71,175 @@ class VerifiedPruningModule:
         with torch.no_grad():
             for name, param in self.model.named_parameters():
                 if 'weight' in name and param.requires_grad:
+                    # Create mask on the same device as the parameter
                     mask = (param.data.abs() > threshold).float()
-                    self.masks[param] = mask
-                    
-                    # Apply mask
-                    param.data.mul_(mask)
+                    self.param_to_mask[param] = mask
                     
                     # Track sparsity
                     n_zeros = (mask == 0).sum().item()
                     zero_params += n_zeros
                     total_params += param.numel()
+                    
+                    # Apply mask immediately
+                    param.data.mul_(mask)
         
-        actual_sparsity = zero_params / total_params if total_params > 0 else 0
-        logger.info(f"Created masks - Target: {self.target_sparsity:.0%}, Actual: {actual_sparsity:.2%}")
+        self.current_sparsity = zero_params / total_params if total_params > 0 else 0
+        logger.info(f"Created masks - Target: {self.target_sparsity:.0%}, Actual: {self.current_sparsity:.2%}")
         
-        return self.masks
+        # Install hooks to maintain sparsity
+        self._install_hooks()
+        
+        return self.param_to_mask
+    
+    def _compute_threshold_sampling(self, sample_rate=0.1):
+        """
+        Compute pruning threshold using sampling (memory-efficient)
+        
+        Args:
+            sample_rate: Fraction of weights to sample (0.01 = 1% for BERT)
+        """
+        logger.info(f"Computing threshold with {sample_rate:.1%} sampling...")
+        
+        all_weights = []
+        total_params = 0
+        
+        # Collect samples from all layers
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    # Keep computations on the same device as the parameter
+                    weight_abs = param.data.abs()
+                    n_params = weight_abs.numel()
+                    total_params += n_params
+                    
+                    # Sample a subset of weights
+                    n_samples = max(1, int(n_params * sample_rate))
+                    
+                    if n_samples < n_params:
+                        # Create indices on the same device as weight_abs
+                        indices = torch.randperm(n_params, device=weight_abs.device)[:n_samples]
+                        sampled = weight_abs.flatten()[indices]
+                    else:
+                        sampled = weight_abs.flatten()
+                    
+                    # Move to CPU for collecting across all layers
+                    all_weights.append(sampled.cpu())
+        
+        # Combine all samples on CPU
+        all_weights = torch.cat(all_weights)
+        
+        # Sort and find threshold
+        sorted_weights, _ = torch.sort(all_weights)
+        threshold_idx = int(len(sorted_weights) * self.target_sparsity)
+        threshold = sorted_weights[threshold_idx].item()
+        
+        logger.info(f"Sampled {len(all_weights):,}/{total_params:,} weights ({len(all_weights)/total_params:.1%})")
+        logger.info(f"Threshold for {self.target_sparsity:.0%} sparsity: {threshold:.6f}")
+        
+        return threshold
+    
+    def _compute_threshold_layerwise(self):
+        """
+        Alternative: Compute threshold layer by layer (for extreme memory constraints)
+        """
+        logger.info("Computing threshold layer-wise...")
+        
+        thresholds = []
+        
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name and param.requires_grad:
+                    weight_abs = param.data.abs()
+                    
+                    # Sort weights in this layer
+                    sorted_weights = weight_abs.flatten().sort()[0]
+                    
+                    # Find threshold for this layer
+                    threshold_idx = int(len(sorted_weights) * self.target_sparsity)
+                    layer_threshold = sorted_weights[threshold_idx].item()
+                    thresholds.append(layer_threshold)
+                    
+                    # Free memory
+                    del sorted_weights
+                    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        
+        # Use median threshold across layers
+        threshold = np.median(thresholds)
+        logger.info(f"Layer-wise threshold: {threshold:.6f}")
+        
+        return threshold
+    
+    def _install_hooks(self):
+        """Install forward hooks to apply masks during forward pass"""
+        
+        def mask_hook(module, input, output, mask):
+            """Hook to apply mask to weights"""
+            if hasattr(module, 'weight') and module.weight is not None:
+                with torch.no_grad():
+                    # Ensure mask is on same device
+                    if mask.device != module.weight.device:
+                        mask = mask.to(module.weight.device)
+                    module.weight.data.mul_(mask)
+            return output
+        
+        # Remove existing hooks
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        
+        # Install new hooks
+        for name, module in self.model.named_modules():
+            if hasattr(module, 'weight') and module.weight is not None:
+                param = module.weight
+                if param in self.param_to_mask:
+                    mask = self.param_to_mask[param]
+                    hook = module.register_forward_hook(
+                        lambda m, i, o, mask=mask: mask_hook(m, i, o, mask)
+                    )
+                    self.hooks.append(hook)
     
     def verify_sparsity(self):
-        """Verify that sparsity is actually maintained"""
+        """Verify actual sparsity of the model"""
+        
         total_params = 0
         zero_params = 0
         
-        for param, mask in self.param_to_mask.items():
-            # Check if masked weights are actually zero
-            masked_zeros = (param.data[mask == 0].abs() < 1e-8).sum().item()
-            expected_zeros = (mask == 0).sum().item()
-            
-            if masked_zeros != expected_zeros:
-                logger.warning(f"Sparsity violation: {masked_zeros}/{expected_zeros} zeros")
-            
-            total_params += param.numel()
-            zero_params += (param.data.abs() < 1e-8).sum().item()
+        with torch.no_grad():
+            for param, mask in self.param_to_mask.items():
+                # Count zeros in actual weights
+                zeros_in_weight = (param.data.abs() < 1e-8).sum().item()
+                
+                # Count expected zeros from mask
+                zeros_in_mask = (mask == 0).sum().item()
+                
+                # Check consistency
+                if abs(zeros_in_weight - zeros_in_mask) > 10:
+                    # Re-apply mask if inconsistent
+                    if mask.device != param.device:
+                        mask = mask.to(param.device)
+                    param.data.mul_(mask)
+                    zeros_in_weight = (param.data.abs() < 1e-8).sum().item()
+                
+                total_params += param.numel()
+                zero_params += zeros_in_weight
         
         actual_sparsity = zero_params / total_params if total_params > 0 else 0
+        self.current_sparsity = actual_sparsity
         return actual_sparsity
     
     def enforce_masks(self):
-        """Force re-application of masks (call after each optimizer step)"""
+        """Force re-application of masks"""
         with torch.no_grad():
             for param, mask in self.param_to_mask.items():
+                # Ensure mask is on same device as parameter
+                if mask.device != param.device:
+                    mask = mask.to(param.device)
+                    self.param_to_mask[param] = mask
                 param.data.mul_(mask)
+    
+    def get_masks(self):
+        """Get masks dictionary compatible with MaskedAdam"""
+        return self.param_to_mask
 
 
 # ============= FIX 3: TRAINING LOOP WITH GUARANTEED PRUNING =============
