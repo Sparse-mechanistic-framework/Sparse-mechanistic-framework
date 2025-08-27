@@ -61,14 +61,14 @@ if not USE_ADVANCED:
                      initial_sparsity=0.0,
                      final_sparsity=0.9,
                      pruning_steps=150,  # Increased for more gradual
-                     pruning_frequency=25,  # More frequent updates
+                     pruning_frequency=23,  # More frequent updates
                      pruning_method='magnitude',
                      learning_rate=2e-5,
                      warmup_steps=100,
                      use_distillation=True,
-                     distillation_alpha=0.6,
+                     distillation_alpha=0.5,
                      temperature=5.0,
-                     circuit_preservation_weight=2.5,  # Increased protection
+                     circuit_preservation_weight=2.0,  # Increased protection
                      protect_critical_layers=None,
                      gradient_accumulation_steps=1,
                      memory_efficient=True):
@@ -685,10 +685,10 @@ def main():
             'pin_memory': True,
             # IMPROVED PRUNING SETTINGS
             'pruning_steps': 150,  # More gradual pruning
-            'pruning_frequency': 25,  # More frequent updates
-            'circuit_preservation_weight': 2.5,  # Stronger protection
+            'pruning_frequency': 24,  # More frequent updates
+            'circuit_preservation_weight': 2.0,  # Stronger protection
             'protect_critical_layers': [2, 3, 4, 5, 6, 7, 8],  # Fixed layers
-            'distillation_alpha': 0.6,  # More weight on distillation
+            'distillation_alpha': 0.5,  # More weight on distillation
             'temperature': 5.0,  # Softer distillation
         }
         
