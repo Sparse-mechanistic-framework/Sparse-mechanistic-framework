@@ -48,10 +48,10 @@ config = {
     'warmup_ratio': 0.1,
     'output_dir': Path('./pruning_results_fixed'),
     'phase1_dir': Path('./phase1_results'),
-    'max_samples': 8000,  # Updated to 6000
+    'max_samples': 6000,  # Updated to 6000
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
-    'protect_layers': [1, 2, 3, 4, 5, 6, 7],  # Critical layers from analysis
+    'protect_layers': [2, 3, 4, 5, 6, 7],  # Critical layers from analysis
     'dataset_split': 'test',  # Using default split
 }
 
@@ -77,7 +77,7 @@ class IRModel(nn.Module):
 
 # ============= DATASET =============
 class NFCorpusDataset(Dataset):
-    def __init__(self, split='test', max_samples=8000, cache_dir='./cache', tokenizer=None, max_length=256):
+    def __init__(self, split='test', max_samples=6000, cache_dir='./cache', tokenizer=None, max_length=256):
         self.split = split
         self.max_samples = max_samples
         self.cache_dir = Path(cache_dir)
@@ -308,7 +308,7 @@ class PruningMethods:
     
     @staticmethod
     def sma_pruning(model, sparsity, importance_scores, protect_layers, circuits=None, device='cuda'):
-        """SMA interpretation-aware pruning with circuit preservation"""
+        """SMA interpretation-aware pruning with circuit preservation - memory efficient"""
         masks = {}
         
         # Build circuit component map
@@ -351,7 +351,17 @@ class PruningMethods:
                 if actual_sparsity > 0:
                     # Weight importance by scores
                     weight_importance = param.abs() * importance_multiplier
-                    threshold = torch.quantile(weight_importance.flatten(), actual_sparsity)
+                    
+                    # Compute threshold for this layer (memory efficient)
+                    importance_flat = weight_importance.flatten()
+                    if importance_flat.numel() > 100000:
+                        # Sample for large layers
+                        indices = torch.randperm(importance_flat.numel())[:100000]
+                        importance_sample = importance_flat[indices]
+                        threshold = torch.quantile(importance_sample, actual_sparsity)
+                    else:
+                        threshold = torch.quantile(importance_flat, actual_sparsity)
+                    
                     mask = (weight_importance > threshold).float()
                 else:
                     mask = torch.ones_like(param)
