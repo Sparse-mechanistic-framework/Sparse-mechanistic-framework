@@ -279,26 +279,52 @@ class PruningMethods:
         return masks
     
     @staticmethod
-    def sma_pruning(model, sparsity, importance_scores, protect_layers, device='cuda'):
-        """SMA interpretation-aware pruning"""
+    def sma_pruning(model, sparsity, importance_scores, protect_layers, circuits=None, device='cuda'):
+        """SMA interpretation-aware pruning with circuit preservation"""
         masks = {}
+        
+        # Build circuit component map
+        circuit_components = set()
+        if circuits:
+            for circuit in circuits:
+                if isinstance(circuit, dict):
+                    layer_idx = circuit.get('layer', -1)
+                    if layer_idx >= 0:
+                        circuit_components.add(f'layer.{layer_idx}')
         
         for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
                 # Get layer index
                 layer_idx = PruningMethods._get_layer_index(name)
                 
-                # Check if in protected layer
-                if layer_idx in protect_layers:
-                    # Reduce sparsity for protected layers
+                # Calculate importance-weighted sparsity
+                base_importance = 0.5  # Default
+                
+                # Check importance scores
+                for key, score in importance_scores.items():
+                    if f'layer_{layer_idx}' in key:
+                        base_importance = score
+                        break
+                
+                # Check if in protected layer or circuit
+                in_circuit = any(f'layer.{layer_idx}' in name for comp in circuit_components)
+                in_protected = layer_idx in protect_layers
+                
+                if in_circuit or in_protected:
+                    # Boost importance for critical components
+                    importance_multiplier = 2.0 if in_circuit else 1.5
+                    # Reduce sparsity for protected components
                     actual_sparsity = max(0, sparsity - 0.3)
                 else:
+                    importance_multiplier = 1.0
                     actual_sparsity = sparsity
                 
                 # Apply magnitude pruning with protection
                 if actual_sparsity > 0:
-                    threshold = torch.quantile(param.abs().flatten(), actual_sparsity)
-                    mask = (param.abs() > threshold).float()
+                    # Weight importance by scores
+                    weight_importance = param.abs() * importance_multiplier
+                    threshold = torch.quantile(weight_importance.flatten(), actual_sparsity)
+                    mask = (weight_importance > threshold).float()
                 else:
                     mask = torch.ones_like(param)
                 
@@ -499,10 +525,23 @@ def main():
     # Load importance scores (for SMA)
     try:
         with open(config['phase1_dir'] / 'importance_scores.json', 'r') as f:
-            importance_scores = json.load(f)
+            phase1_data = json.load(f)
+            if 'importance_scores' in phase1_data:
+                importance_scores = phase1_data['importance_scores']
+            else:
+                importance_scores = phase1_data
     except:
         logger.warning("Could not load importance scores, using defaults")
         importance_scores = {}
+    
+    # Load circuits (for SMA)
+    try:
+        with open(config['phase1_dir'] / 'circuits.json', 'r') as f:
+            circuits = json.load(f)
+            logger.info(f"Loaded {len(circuits)} circuits from Phase 1")
+    except:
+        logger.warning("Could not load circuits, proceeding without circuit preservation")
+        circuits = []
     
     # Results storage
     all_results = {
@@ -538,7 +577,7 @@ def main():
             elif method == 'sma':
                 masks = PruningMethods.sma_pruning(
                     model, sparsity, importance_scores, 
-                    config['protect_layers'], config['device']
+                    config['protect_layers'], circuits, config['device']
                 )
             
             # Verify sparsity
