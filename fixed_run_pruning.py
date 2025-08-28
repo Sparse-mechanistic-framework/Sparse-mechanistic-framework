@@ -197,25 +197,32 @@ class PruningMethods:
     
     @staticmethod
     def magnitude_pruning(model, sparsity, device='cuda'):
-        """Magnitude-based pruning (Han et al., 2015)"""
+        """Magnitude-based pruning (Han et al., 2015) - memory efficient version"""
         masks = {}
         
-        # Collect all weights and compute threshold
-        all_weights = []
+        # Collect weight statistics without concatenating
+        all_weights_list = []
         param_list = []
         
         for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
-                all_weights.append(param.abs().flatten())
                 param_list.append((name, param))
+                # Sample weights to avoid memory issues
+                weight_sample = param.abs().flatten()
+                if weight_sample.numel() > 10000:
+                    # Randomly sample for large tensors
+                    indices = torch.randperm(weight_sample.numel())[:10000]
+                    weight_sample = weight_sample[indices]
+                all_weights_list.append(weight_sample)
         
-        if not all_weights:
+        if not all_weights_list:
             return masks
-            
-        all_weights = torch.cat(all_weights)
+        
+        # Concatenate samples and compute threshold
+        all_weights = torch.cat(all_weights_list)
         threshold = torch.quantile(all_weights, sparsity)
         
-        # Apply pruning
+        # Apply pruning with computed threshold
         for name, param in param_list:
             mask = (param.abs() > threshold).float()
             masks[name] = mask.to(device)
@@ -225,14 +232,24 @@ class PruningMethods:
     
     @staticmethod
     def l0_pruning(model, sparsity, device='cuda'):
-        """L0 regularization pruning (Louizos et al., 2018)"""
+        """L0 regularization pruning (Louizos et al., 2018) - memory efficient"""
         masks = {}
         
         for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
                 # Compute importance scores with stochastic gates
                 importance = param.abs() + torch.randn_like(param) * 0.05
-                threshold = torch.quantile(importance.flatten(), sparsity)
+                
+                # Compute threshold for this layer
+                importance_flat = importance.flatten()
+                if importance_flat.numel() > 100000:
+                    # Sample for very large layers
+                    indices = torch.randperm(importance_flat.numel())[:100000]
+                    importance_sample = importance_flat[indices]
+                    threshold = torch.quantile(importance_sample, sparsity)
+                else:
+                    threshold = torch.quantile(importance_flat, sparsity)
+                
                 mask = (importance > threshold).float()
                 masks[name] = mask.to(device)
                 param.data *= masks[name]
@@ -241,13 +258,14 @@ class PruningMethods:
     
     @staticmethod
     def movement_pruning(model, sparsity, dataloader=None, device='cuda'):
-        """Movement pruning (Sanh et al., 2020)"""
+        """Movement pruning (Sanh et al., 2020) - memory efficient"""
         if dataloader is None:
             # Fallback to magnitude if no data
             return PruningMethods.magnitude_pruning(model, sparsity, device)
         
         # Store initial weights
-        initial_weights = {name: param.clone() for name, param in model.named_parameters()}
+        initial_weights = {name: param.clone() for name, param in model.named_parameters()
+                          if 'weight' in name and param.dim() >= 2}
         
         # Brief training to capture movement
         optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
@@ -266,12 +284,22 @@ class PruningMethods:
             optimizer.step()
             optimizer.zero_grad()
         
-        # Compute movement scores
+        # Compute movement scores layer by layer
         masks = {}
         for name, param in model.named_parameters():
-            if 'weight' in name and param.dim() >= 2:
+            if name in initial_weights:
                 movement = (param - initial_weights[name]) * param.sign()
-                threshold = torch.quantile(movement.flatten(), sparsity)
+                movement_flat = movement.flatten()
+                
+                # Compute threshold for this layer
+                if movement_flat.numel() > 100000:
+                    # Sample for large layers
+                    indices = torch.randperm(movement_flat.numel())[:100000]
+                    movement_sample = movement_flat[indices]
+                    threshold = torch.quantile(movement_sample, sparsity)
+                else:
+                    threshold = torch.quantile(movement_flat, sparsity)
+                
                 mask = (movement > threshold).float()
                 masks[name] = mask.to(device)
                 param.data *= masks[name]
