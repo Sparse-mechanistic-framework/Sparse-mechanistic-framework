@@ -48,7 +48,7 @@ config = {
     'warmup_ratio': 0.1,
     'output_dir': Path('./pruning_results_fixed'),
     'phase1_dir': Path('./phase1_results'),
-    'max_samples': 6000,  # Updated to 6000
+    'max_samples': 8000,  # Updated to 6000
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
     'protect_layers': [1, 2, 3, 4, 5, 6, 7],  # Critical layers from analysis
@@ -77,7 +77,7 @@ class IRModel(nn.Module):
 
 # ============= DATASET =============
 class NFCorpusDataset(Dataset):
-    def __init__(self, split='test', max_samples=6000, cache_dir='./cache', tokenizer=None, max_length=256):
+    def __init__(self, split='test', max_samples=8000, cache_dir='./cache', tokenizer=None, max_length=256):
         self.split = split
         self.max_samples = max_samples
         self.cache_dir = Path(cache_dir)
