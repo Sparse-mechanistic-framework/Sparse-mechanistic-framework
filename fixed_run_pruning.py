@@ -51,7 +51,7 @@ config = {
     'max_samples': 6000,  # Updated to 6000
     'gradient_accumulation_steps': 2,
     'fp16': True,  # Mixed precision
-    'protect_layers': [2, 3, 4, 5, 6, 7],  # Critical layers from analysis
+    'protect_layers': [1, 2, 3, 4, 5, 6, 7],  # Critical layers from analysis
     'dataset_split': 'test',  # Using default split
 }
 
