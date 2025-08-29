@@ -29,7 +29,7 @@ class PruningConfig:
     # Pruning schedule
     initial_sparsity: float = 0.0
     final_sparsity: float = 0.5
-    pruning_steps: int = 10  # Reduced from 20
+    pruning_steps: int = 20  # Reduced from 20
     pruning_frequency: int = 100  # Prune every N training steps
     
     # Fine-tuning
