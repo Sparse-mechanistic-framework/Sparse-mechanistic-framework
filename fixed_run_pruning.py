@@ -44,7 +44,7 @@ class ExperimentConfig:
     baseline_epochs: int = 7  # Increased to achieve better baseline
     batch_size: int = 16  # Increased batch size
     learning_rate: float = 3e-5  # Slightly higher LR
-    baseline_lr: float = 5e-5  # Higher LR for baseline
+    baseline_lr: float = 5e-4  # Higher LR for baseline
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
@@ -61,7 +61,7 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.68]  # Removed 0.7 as it's too aggressive
+            self.target_sparsities = [0.3, 0.5, 0.738]  # Removed 0.7 as it's too aggressive
         if self.pruning_methods is None:
             self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
         if self.protect_layers is None:
