@@ -41,7 +41,7 @@ class ExperimentConfig:
     target_sparsities: List[float] = None
     pruning_methods: List[str] = None
     num_epochs: int = 5  # Increased for better fine-tuning
-    baseline_epochs: int = 7  # Increased to achieve better baseline
+    baseline_epochs: int = 6  # Increased to achieve better baseline
     batch_size: int = 16  # Increased batch size
     learning_rate: float = 3e-5  # Slightly higher LR
     baseline_lr: float = 5e-5  # Higher LR for baseline
