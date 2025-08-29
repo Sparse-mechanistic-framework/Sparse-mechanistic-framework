@@ -48,7 +48,7 @@ class ExperimentConfig:
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
-    max_samples: int = 10500
+    max_samples: int = 11300
     dataset_split: str = 'test'
     gradient_accumulation_steps: int = 1  # Reduced since batch size increased
     fp16: bool = True
@@ -61,7 +61,7 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.738]  # Removed 0.7 as it's too aggressive
+            self.target_sparsities = [0.3, 0.5, 0.728]  # Removed 0.7 as it's too aggressive
         if self.pruning_methods is None:
             self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
         if self.protect_layers is None:
@@ -174,7 +174,7 @@ class NFCorpusDataset(Dataset):
     
     def __init__(self, 
                  split: str = 'test',
-                 max_samples: int = 10500,
+                 max_samples: int = 11300,
                  cache_dir: str = './cache',
                  tokenizer: Optional[Any] = None,
                  max_length: int = 256,
