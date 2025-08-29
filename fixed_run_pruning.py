@@ -44,11 +44,11 @@ class ExperimentConfig:
     baseline_epochs: int = 7  # Increased to achieve better baseline
     batch_size: int = 16  # Increased batch size
     learning_rate: float = 3e-5  # Slightly higher LR
-    baseline_lr: float = 5e-4  # Higher LR for baseline
+    baseline_lr: float = 5e-5  # Higher LR for baseline
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
-    max_samples: int = 6000
+    max_samples: int = 8000
     dataset_split: str = 'test'
     gradient_accumulation_steps: int = 1  # Reduced since batch size increased
     fp16: bool = True
@@ -174,7 +174,7 @@ class NFCorpusDataset(Dataset):
     
     def __init__(self, 
                  split: str = 'test',
-                 max_samples: int = 6000,
+                 max_samples: int = 7000,
                  cache_dir: str = './cache',
                  tokenizer: Optional[Any] = None,
                  max_length: int = 256,
