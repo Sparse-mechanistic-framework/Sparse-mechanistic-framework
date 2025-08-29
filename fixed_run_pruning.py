@@ -40,8 +40,8 @@ class ExperimentConfig:
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     target_sparsities: List[float] = None
     pruning_methods: List[str] = None
-    num_epochs: int = 8  # Increased for better fine-tuning
-    baseline_epochs: int = 10  # Increased to achieve better baseline
+    num_epochs: int = 5  # Increased for better fine-tuning
+    baseline_epochs: int = 7  # Increased to achieve better baseline
     batch_size: int = 16  # Increased batch size
     learning_rate: float = 3e-5  # Slightly higher LR
     baseline_lr: float = 5e-5  # Higher LR for baseline
@@ -61,11 +61,11 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.6]  # Removed 0.7 as it's too aggressive
+            self.target_sparsities = [0.3, 0.5, 0.68]  # Removed 0.7 as it's too aggressive
         if self.pruning_methods is None:
             self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
         if self.protect_layers is None:
-            self.protect_layers = [2, 3, 4, 5, 6, 7]  # Critical layers from analysis
+            self.protect_layers = [1, 2, 3, 4, 5, 6, 7]  # Critical layers from analysis
         
         # Create output directory
         self.output_dir.mkdir(exist_ok=True, parents=True)
@@ -795,7 +795,7 @@ def run_experiment(config: ExperimentConfig):
             loss = trainer.train_epoch(baseline_model, train_loader, optimizer, scheduler)
             
             # Evaluate every 2 epochs
-            if epoch % 2 == 1 or epoch == config.baseline_epochs - 1:
+            if epoch % 3 == 1 or epoch == config.baseline_epochs - 1:
                 metrics = trainer.evaluate(baseline_model, eval_loader)
                 logger.info(f"Epoch {epoch+1}: Loss={loss:.4f}, Correlation={metrics['correlation']:.4f}")
                 
@@ -866,7 +866,7 @@ def run_experiment(config: ExperimentConfig):
                 scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
                 
                 best_metrics = None
-                best_correlation = -1.0
+                best_correlation = -1.5
                 
                 with timer(f"Fine-tuning {method} model", logger):
                     for epoch in range(config.num_epochs):
