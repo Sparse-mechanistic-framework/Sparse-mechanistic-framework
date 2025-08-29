@@ -174,7 +174,7 @@ class NFCorpusDataset(Dataset):
     
     def __init__(self, 
                  split: str = 'test',
-                 max_samples: int = 7000,
+                 max_samples: int = 8000,
                  cache_dir: str = './cache',
                  tokenizer: Optional[Any] = None,
                  max_length: int = 256,
