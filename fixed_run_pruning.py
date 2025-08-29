@@ -48,7 +48,7 @@ class ExperimentConfig:
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
-    max_samples: int = 9000
+    max_samples: int = 10500
     dataset_split: str = 'test'
     gradient_accumulation_steps: int = 1  # Reduced since batch size increased
     fp16: bool = True
@@ -174,7 +174,7 @@ class NFCorpusDataset(Dataset):
     
     def __init__(self, 
                  split: str = 'test',
-                 max_samples: int = 9000,
+                 max_samples: int = 10500,
                  cache_dir: str = './cache',
                  tokenizer: Optional[Any] = None,
                  max_length: int = 256,
