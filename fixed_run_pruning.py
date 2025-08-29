@@ -360,24 +360,63 @@ class PruningMethods:
     
     @staticmethod
     def apply_pruning_exact(model: nn.Module, target_sparsity: float, method: str = 'magnitude', 
-                           device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """Apply pruning with exact sparsity targeting"""
+                           device: str = 'cuda', dataloader: Optional[DataLoader] = None,
+                           logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
+        """Apply pruning with exact sparsity targeting for all methods"""
         masks = {}
         weights_list = []
         param_info = []
         
-        # Collect all weight parameters
-        for name, param in model.named_parameters():
-            if 'weight' in name and param.dim() >= 2:
-                param_info.append((name, param))
-                
-                if method == 'magnitude':
-                    weights_list.append(param)
-                elif method == 'l0':
-                    # Add noise for L0
-                    weights_list.append(param.abs() + torch.randn_like(param) * 0.05)
-                else:
-                    weights_list.append(param)
+        # Special handling for movement pruning
+        if method == 'movement' and dataloader is not None:
+            # Store initial weights
+            initial_weights = {}
+            for name, param in model.named_parameters():
+                if 'weight' in name and param.dim() >= 2:
+                    initial_weights[name] = param.clone()
+            
+            # Brief training to capture movement
+            model.train()
+            optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+            
+            try:
+                for batch_idx, batch in enumerate(dataloader):
+                    if batch_idx >= 20:
+                        break
+                    batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+                    outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+                    logits = outputs.logits.squeeze()
+                    loss = F.mse_loss(logits, batch['labels'])
+                    loss.backward()
+                    optimizer.step()
+                    optimizer.zero_grad()
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Movement training failed: {e}")
+            
+            # Compute movement scores
+            for name, param in model.named_parameters():
+                if name in initial_weights:
+                    movement = (param - initial_weights[name]) * param.sign()
+                    weights_list.append(movement)
+                    param_info.append((name, param))
+        else:
+            # Collect all weight parameters
+            for name, param in model.named_parameters():
+                if 'weight' in name and param.dim() >= 2:
+                    param_info.append((name, param))
+                    
+                    if method == 'magnitude':
+                        weights_list.append(param)
+                    elif method == 'l0':
+                        # Add noise for L0
+                        importance = param.abs() + torch.randn_like(param) * 0.05
+                        weights_list.append(importance)
+                    elif method == 'random':
+                        # Random scores
+                        weights_list.append(torch.rand_like(param))
+                    else:
+                        weights_list.append(param)
         
         if not weights_list:
             return masks
@@ -387,12 +426,10 @@ class PruningMethods:
         
         # Apply masks
         for i, (name, param) in enumerate(param_info):
-            if method == 'magnitude':
-                mask = (param.abs() > threshold).float()
-            elif method == 'l0':
-                mask = (weights_list[i] > threshold).float()
+            if method in ['magnitude', 'movement']:
+                mask = (weights_list[i].abs() > threshold).float()
             else:
-                mask = (param.abs() > threshold).float()
+                mask = (weights_list[i] > threshold).float()
             
             masks[name] = mask
             param.data.mul_(mask)
@@ -401,14 +438,41 @@ class PruningMethods:
     
     @staticmethod
     def random_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """Random pruning baseline"""
+        """Random pruning with exact sparsity"""
         masks = {}
+        all_params = []
+        param_info = []
         
+        # Collect all parameters
         for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
-                mask = torch.rand_like(param, device=device) > sparsity
-                masks[name] = mask.float()
-                param.data.mul_(masks[name])
+                param_info.append((name, param))
+                all_params.append(param.flatten())
+        
+        if not all_params:
+            return masks
+        
+        # Generate random scores for all parameters
+        all_params_concat = torch.cat(all_params)
+        random_scores = torch.rand_like(all_params_concat)
+        
+        # Get exact threshold
+        num_zeros = int(len(random_scores) * sparsity)
+        if num_zeros > 0:
+            sorted_scores, _ = torch.sort(random_scores)
+            threshold = sorted_scores[num_zeros - 1]
+        else:
+            threshold = 0.0
+        
+        # Apply masks
+        start_idx = 0
+        for name, param in param_info:
+            param_size = param.numel()
+            param_scores = random_scores[start_idx:start_idx + param_size].reshape(param.shape)
+            mask = (param_scores > threshold).float()
+            masks[name] = mask
+            param.data.mul_(mask)
+            start_idx += param_size
         
         return masks
     
@@ -470,71 +534,14 @@ class PruningMethods:
     
     @staticmethod
     def l0_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """L0 regularization-based pruning with exact sparsity"""
-        # This is now handled by apply_pruning_exact with method='l0'
+        """L0 regularization-based pruning with exact sparsity - delegates to apply_pruning_exact"""
         return PruningMethods.apply_pruning_exact(model, sparsity, 'l0', device)
     
     @staticmethod
     def movement_pruning(model: nn.Module, sparsity: float, dataloader: Optional[DataLoader] = None,
                         device: str = 'cuda', logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
-        """Movement-based pruning with exact sparsity"""
-        if dataloader is None:
-            return PruningMethods.apply_pruning_exact(model, sparsity, 'magnitude', device)
-        
-        # Store initial weights
-        initial_weights = {}
-        for name, param in model.named_parameters():
-            if 'weight' in name and param.dim() >= 2:
-                initial_weights[name] = param.clone()
-        
-        # Brief fine-tuning to capture movement
-        model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
-        
-        try:
-            for batch_idx, batch in enumerate(dataloader):
-                if batch_idx >= 20:
-                    break
-                
-                # Move batch to device
-                batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-                
-                # Forward pass
-                outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
-                logits = outputs.logits.squeeze()
-                loss = F.mse_loss(logits, batch['labels'])
-                
-                # Backward pass
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad()
-        
-        except Exception as e:
-            if logger:
-                logger.warning(f"Movement pruning training failed: {e}")
-        
-        # Compute movement scores and apply exact pruning
-        masks = {}
-        weights_list = []
-        param_info = []
-        
-        for name, param in model.named_parameters():
-            if name in initial_weights:
-                movement = (param - initial_weights[name]) * param.sign()
-                weights_list.append(movement)
-                param_info.append((name, param))
-        
-        if weights_list:
-            # Get exact threshold for movement scores
-            threshold = PruningMethods.get_exact_threshold(weights_list, sparsity)
-            
-            # Apply masks
-            for i, (name, param) in enumerate(param_info):
-                mask = (weights_list[i] > threshold).float()
-                masks[name] = mask
-                param.data.mul_(mask)
-        
-        return masks
+        """Movement-based pruning with exact sparsity - delegates to apply_pruning_exact"""
+        return PruningMethods.apply_pruning_exact(model, sparsity, 'movement', device, dataloader, logger)
     
     @staticmethod
     def sma_pruning(model: nn.Module, sparsity: float, importance_scores: Dict[str, float],
@@ -542,6 +549,9 @@ class PruningMethods:
                    device: str = 'cuda', logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
         """SMA interpretation-aware pruning with circuit preservation"""
         masks = {}
+        weights_list = []
+        param_info = []
+        protection_factors = []
         
         # Build circuit component map
         circuit_components = set()
@@ -559,26 +569,30 @@ class PruningMethods:
                 
                 # Determine protection level
                 protection_factor = 1.0
-                actual_sparsity = sparsity
                 
                 # Check if in protected layer or circuit
                 if layer_idx in circuit_components:
                     protection_factor = 2.0  # Strong protection for circuits
-                    actual_sparsity = max(0, sparsity - 0.3)
                 elif layer_idx in protect_layers:
                     protection_factor = 1.5  # Moderate protection
-                    actual_sparsity = max(0, sparsity - 0.2)
                 
                 # Apply protection factor to weights
-                if actual_sparsity > 0:
-                    weight_importance = param.abs() * protection_factor
-                    threshold = PruningMethods.calculate_threshold_sampled(weight_importance, actual_sparsity)
-                    mask = (weight_importance > threshold).float()
-                else:
-                    mask = torch.ones_like(param)
-                
-                masks[name] = mask
-                param.data.mul_(mask)
+                weight_importance = param.abs() * protection_factor
+                weights_list.append(weight_importance)
+                param_info.append((name, param))
+                protection_factors.append(protection_factor)
+        
+        if not weights_list:
+            return masks
+        
+        # Get exact threshold for SMA
+        threshold = PruningMethods.get_exact_threshold(weights_list, sparsity)
+        
+        # Apply masks with protection
+        for i, (name, param) in enumerate(param_info):
+            mask = (weights_list[i] > threshold).float()
+            masks[name] = mask
+            param.data.mul_(mask)
         
         return masks
     
@@ -896,19 +910,17 @@ def run_experiment(config: ExperimentConfig):
                 # Create fresh model
                 model = IRModel(copy.deepcopy(base_model)).to(config.device)
                 
-                # Apply pruning
+                # Apply pruning with exact sparsity targeting
                 with timer(f"Applying {method} pruning", logger):
                     if method == 'random':
                         masks = PruningMethods.random_pruning(model, sparsity, config.device)
                     elif method == 'magnitude':
-                        # Use exact pruning for magnitude
                         masks = PruningMethods.apply_pruning_exact(model, sparsity, 'magnitude', config.device)
                     elif method == 'l0':
-                        # Use exact pruning for L0
                         masks = PruningMethods.apply_pruning_exact(model, sparsity, 'l0', config.device)
                     elif method == 'movement':
-                        masks = PruningMethods.movement_pruning(
-                            model, sparsity, train_loader, config.device, logger
+                        masks = PruningMethods.apply_pruning_exact(
+                            model, sparsity, 'movement', config.device, train_loader, logger
                         )
                     elif method == 'sma':
                         masks = PruningMethods.sma_pruning(
