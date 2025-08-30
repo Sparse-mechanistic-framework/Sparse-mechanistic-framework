@@ -64,7 +64,7 @@ class ExperimentConfig:
         if self.target_sparsities is None:
             self.target_sparsities = [0.3, 0.5, 0.728]
         if self.pruning_methods is None:
-            self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
+            self.pruning_methods = ['sma', 'magnitude', 'l0', 'movement', 'random']
         if self.protect_layers is None:
             self.protect_layers = [1, 2, 3, 4, 5, 6, 7]
         
@@ -412,7 +412,7 @@ class PruningMethods:
         # Add stochastic noise for L0
         noisy_weights = []
         for name, param in param_info:
-            importance = param.abs() + torch.randn_like(param) * 0.01
+            importance = param.abs() + torch.randn_like(param) * 0.001
             noisy_weights.append(importance.flatten())
         
         # Get exact threshold
@@ -544,7 +544,7 @@ class PruningMethods:
                 
                 # Add importance scores if available
                 if name in importance_scores:
-                    importance_factor = 1.0 + importance_scores[name]
+                    importance_factor = 2.0 + importance_scores[name]
                     base_importance = base_importance * importance_factor
                 
                 # Apply layer-based protection
