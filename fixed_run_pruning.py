@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced Pruning Script for NFCorpus with Critical Fixes
-Incorporates gradient masking, corrected movement pruning, and adaptive SMA protection
+Fixed Pruning Script for NFCorpus with All Corrections
+Ensures different methods produce different results with proper implementations
 """
 
 import os
@@ -46,7 +46,7 @@ class ExperimentConfig:
     learning_rate: float = 3e-5
     baseline_lr: float = 5e-5
     warmup_ratio: float = 0.1
-    output_dir: Path = Path('./pruning_results_enhanced')
+    output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
     max_samples: int = 11200
     dataset_split: str = 'test'
@@ -57,18 +57,18 @@ class ExperimentConfig:
     seed: int = 42
     num_workers: int = 2
     pin_memory: bool = True
-    sparsity_tolerance: float = 0.01  # For verification
+    sparsity_tolerance: float = 0.01
     
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
             self.target_sparsities = [0.3, 0.5, 0.728]
         if self.pruning_methods is None:
-            self.pruning_methods = ['sma', 'magnitude', 'l0', 'movement', 'random']
+            self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
         if self.protect_layers is None:
-            self.protect_layers = [1, 2, 3, 4, 5, 6, 7]
+            self.protect_layers = [2, 3, 4, 5, 6, 7]
         
-        # Create output directory
+        # Create output directories
         self.output_dir.mkdir(exist_ok=True, parents=True)
         (self.output_dir / 'models').mkdir(exist_ok=True)
         (self.output_dir / 'metrics').mkdir(exist_ok=True)
@@ -158,7 +158,7 @@ class IRModel(nn.Module):
             num_labels=1
         )
         
-        # Enable gradient checkpointing for memory efficiency
+        # Enable gradient checkpointing
         if hasattr(self.bert, 'gradient_checkpointing_enable'):
             self.bert.gradient_checkpointing_enable()
     
@@ -243,12 +243,11 @@ class NFCorpusDataset(Dataset):
                     doc_text = corpus[corpus_id]
                     
                     if query_text and doc_text:
-                        # Truncate document
                         doc_text = ' '.join(doc_text.split()[:400])
                         processed_data.append({
                             'query': query_text,
                             'document': doc_text,
-                            'relevance': float(score / 2.0),  # Normalize to [0, 1]
+                            'relevance': float(score / 2.0),
                             'query_id': query_id,
                             'doc_id': corpus_id
                         })
@@ -296,10 +295,10 @@ class NFCorpusDataset(Dataset):
         
         return sample
 
-# ============= PRUNING METHODS =============
+# ============= FIXED PRUNING METHODS =============
 
 class PruningMethods:
-    """All pruning methods with exact sparsity targeting and fixes"""
+    """All pruning methods with proper implementations"""
     
     @staticmethod
     def get_weights_for_pruning(model: nn.Module) -> Tuple[List, List]:
@@ -337,7 +336,7 @@ class PruningMethods:
         
         # Sort and find exact threshold
         sorted_weights, _ = torch.sort(all_weights)
-        threshold = sorted_weights[num_zeros - 1]
+        threshold = sorted_weights[num_zeros - 1] if num_zeros > 0 else torch.tensor(0.0)
         
         return threshold
     
@@ -346,7 +345,7 @@ class PruningMethods:
         """Extract layer index from parameter name"""
         parts = param_name.split('.')
         for i, part in enumerate(parts):
-            if part == 'layer' and i + 1 < len(parts):
+            if 'layer' in part.lower() and i + 1 < len(parts):
                 try:
                     return int(parts[i + 1])
                 except ValueError:
@@ -362,7 +361,7 @@ class PruningMethods:
         if not weights_list:
             return masks
         
-        # Generate random scores
+        # Generate random scores for each parameter
         random_scores = []
         for name, param in param_info:
             scores = torch.rand_like(param)
@@ -373,8 +372,8 @@ class PruningMethods:
         
         # Apply masks
         for i, (name, param) in enumerate(param_info):
-            scores = random_scores[i].reshape(param.shape)
-            mask = (scores > threshold).float()
+            scores_shape = random_scores[i][:param.numel()].reshape(param.shape)
+            mask = (scores_shape > threshold).float()
             masks[name] = mask
             param.data.mul_(mask)
         
@@ -402,17 +401,20 @@ class PruningMethods:
     
     @staticmethod
     def l0_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """L0 regularization pruning with exact sparsity"""
+        """L0 regularization pruning with adaptive noise"""
         masks = {}
         weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
         if not weights_list:
             return masks
         
-        # Add stochastic noise for L0
+        # Add adaptive stochastic noise for L0
         noisy_weights = []
         for name, param in param_info:
-            importance = param.abs() + torch.randn_like(param) * 0.001
+            # Adaptive noise based on parameter statistics
+            param_std = param.abs().std()
+            noise_scale = param_std * 0.1  # 10% of std dev
+            importance = param.abs() + torch.randn_like(param) * noise_scale
             noisy_weights.append(importance.flatten())
         
         # Get exact threshold
@@ -420,8 +422,8 @@ class PruningMethods:
         
         # Apply masks
         for i, (name, param) in enumerate(param_info):
-            importance = noisy_weights[i].reshape(param.shape)
-            mask = (importance > threshold).float()
+            importance_shape = noisy_weights[i][:param.numel()].reshape(param.shape)
+            mask = (importance_shape > threshold).float()
             masks[name] = mask
             param.data.mul_(mask)
         
@@ -430,73 +432,66 @@ class PruningMethods:
     @staticmethod
     def movement_pruning(model: nn.Module, sparsity: float, dataloader: DataLoader,
                         device: str = 'cuda', logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
-        """FIXED Movement pruning with correct implementation"""
+        """FIXED Movement pruning - measures movement from current trained state"""
         masks = {}
         weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        if not weights_list:
-            return masks
+        if not weights_list or dataloader is None:
+            # Fallback to magnitude if no dataloader
+            return PruningMethods.magnitude_pruning(model, sparsity, device)
         
-        # Create a fresh model for movement calculation
-        temp_model = copy.deepcopy(model)
-        
-        # Reset to random initialization for movement measurement
-        for name, param in temp_model.named_parameters():
-            if 'weight' in name and param.dim() >= 2:
-                if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
-                    # Reinitialize with Xavier/He initialization
-                    if 'attention' in name:
-                        nn.init.xavier_uniform_(param)
-                    else:
-                        nn.init.kaiming_uniform_(param)
-        
-        # Store initial weights
+        # Store initial weights (current trained state - NOT random!)
         initial_weights = {}
-        for name, param in temp_model.named_parameters():
+        for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
                 if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
-                    initial_weights[name] = param.clone()
+                    initial_weights[name] = param.data.clone()
         
-        # Brief training to capture movement
-        temp_model.train()
-        optimizer = torch.optim.AdamW(temp_model.parameters(), lr=1e-4)
+        # Brief fine-tuning to capture movement
+        model.train()
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+        
+        if logger:
+            logger.info("Computing movement scores...")
         
         for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= 20:  # More iterations for better movement signal
+            if batch_idx >= 20:  # Limited iterations
                 break
             
             batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
-            outputs = temp_model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
+            outputs = model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'])
             logits = outputs.logits.squeeze()
+            if logits.dim() == 0:
+                logits = logits.unsqueeze(0)
             loss = F.mse_loss(logits, batch['labels'])
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
         
-        # Compute movement scores based on the temp model
+        # Compute movement scores (how much weights moved and in which direction)
         movement_scores = []
         for name, param in param_info:
             if name in initial_weights:
-                # Get the corresponding parameter from temp_model
-                temp_param = dict(temp_model.named_parameters())[name]
-                movement = (temp_param - initial_weights[name]).abs()
+                # Movement = magnitude of change * sign alignment
+                # Weights that move away from zero are important
+                movement = (param.data - initial_weights[name]) * param.data.sign()
                 movement_scores.append(movement.flatten())
             else:
-                # If not in initial_weights, use magnitude as fallback
+                # Fallback to magnitude
                 movement_scores.append(param.abs().flatten())
         
-        # Get exact threshold
+        # Get threshold
         threshold = PruningMethods.get_exact_threshold(movement_scores, sparsity)
         
-        # Apply masks to the ORIGINAL model
+        # Restore original weights and apply masks
         for i, (name, param) in enumerate(param_info):
-            movement = movement_scores[i].reshape(param.shape)
-            mask = (movement > threshold).float()
+            if name in initial_weights:
+                param.data = initial_weights[name]  # Restore original trained weights
+            
+            movement_shape = movement_scores[i][:param.numel()].reshape(param.shape)
+            mask = (movement_shape > threshold).float()
             masks[name] = mask
             param.data.mul_(mask)
-        
-        # Clean up
-        del temp_model
         
         return masks
     
@@ -504,19 +499,12 @@ class PruningMethods:
     def sma_pruning(model: nn.Module, sparsity: float, importance_scores: Dict[str, float],
                    protect_layers: List[int], circuits: Optional[List[Dict]] = None,
                    device: str = 'cuda', logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
-        """ENHANCED SMA pruning with adaptive circuit protection"""
+        """SMA pruning with proper importance weighting and circuit protection"""
         masks = {}
+        weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        # Adaptive protection based on sparsity level
-        if sparsity >= 0.7:
-            circuit_protection = 10.0  # Very strong protection at high sparsity
-            layer_protection = 5.0
-        elif sparsity >= 0.5:
-            circuit_protection = 5.0
-            layer_protection = 3.0
-        else:
-            circuit_protection = 3.0
-            layer_protection = 2.0
+        if not weights_list:
+            return masks
         
         # Build circuit layer set
         circuit_layers = set()
@@ -527,63 +515,58 @@ class PruningMethods:
                     if layer_idx >= 0:
                         circuit_layers.add(layer_idx)
         
-        # Collect weights with protection factors
-        protected_weights = []
-        param_info_all = []
-        
-        for name, param in model.named_parameters():
-            if 'weight' in name and param.dim() >= 2:
-                if any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
-                    continue
-                
-                # Get layer index
-                layer_idx = PruningMethods._get_layer_index(name)
-                
-                # Determine protection factor
-                base_importance = param.abs()
-                
-                # Add importance scores if available
-                if name in importance_scores:
-                    importance_factor = 2.0 + importance_scores[name]
-                    base_importance = base_importance * importance_factor
-                
-                # Apply layer-based protection
+        # Compute importance-weighted scores
+        weighted_scores = []
+        for name, param in param_info:
+            layer_idx = PruningMethods._get_layer_index(name)
+            
+            # Base score from magnitude
+            base_score = param.abs()
+            
+            # Apply importance from Phase 1 if available
+            importance_multiplier = 1.0
+            
+            # Check for layer-specific importance scores
+            for key, score in importance_scores.items():
+                if f'layer_{layer_idx}' in key or f'layer.{layer_idx}' in key:
+                    # Use actual importance score (assumed to be 0-1)
+                    # Higher importance = higher multiplier
+                    importance_multiplier = 1.0 + score * 2.0  # Can go up to 3x
+                    break
+            
+            # Apply circuit protection (strongest)
+            if layer_idx in circuit_layers:
+                importance_multiplier *= 3.0  # Triple importance for circuit layers
+                if logger:
+                    logger.info(f"  Circuit layer {layer_idx} protected with 3x multiplier")
+            
+            # Apply general layer protection (moderate)
+            elif layer_idx in protect_layers:
+                importance_multiplier *= 1.5  # 1.5x for protected layers
+            
+            # Apply adaptive protection based on sparsity level
+            if sparsity >= 0.7:
+                # At high sparsity, increase protection further
                 if layer_idx in circuit_layers:
-                    protection = circuit_protection
+                    importance_multiplier *= 1.5  # Total 4.5x for circuits
                 elif layer_idx in protect_layers:
-                    protection = layer_protection
-                else:
-                    protection = 1.0
-                
-                protected_weights.append(base_importance.flatten() * protection)
-                param_info_all.append((name, param, protection))
-        
-        if not protected_weights:
-            return masks
+                    importance_multiplier *= 1.3  # Total 1.95x for protected
+            
+            weighted_scores.append((base_score * importance_multiplier).flatten())
         
         # Get threshold
-        threshold = PruningMethods.get_exact_threshold(protected_weights, sparsity)
+        threshold = PruningMethods.get_exact_threshold(weighted_scores, sparsity)
         
-        # Apply masks with protection
-        for i, (name, param, protection) in enumerate(param_info_all):
-            weighted_param = param.abs() * protection
-            
-            # Add importance score boost if available
-            if name in importance_scores:
-                weighted_param = weighted_param * (1.0 + importance_scores[name])
-            
-            mask = (weighted_param > threshold).float()
+        # Apply masks
+        for i, (name, param) in enumerate(param_info):
+            score_shape = weighted_scores[i][:param.numel()].reshape(param.shape)
+            mask = (score_shape > threshold).float()
             masks[name] = mask
             param.data.mul_(mask)
-            
-            if logger and i < 5:  # Log first few for debugging
-                kept = mask.sum().item()
-                total = mask.numel()
-                logger.info(f"  {name}: kept {kept}/{total} ({kept/total:.2%}), protection={protection:.1f}")
         
         return masks
 
-# ============= ENHANCED TRAINER WITH FIXES =============
+# ============= TRAINER WITH GRADIENT MASKING =============
 
 class Trainer:
     """Training utilities with proper gradient masking"""
@@ -596,32 +579,31 @@ class Trainer:
     
     def register_gradient_hooks(self, model: nn.Module, masks: Dict[str, torch.Tensor]):
         """Register hooks to zero gradients for pruned weights"""
+        self.remove_hooks()  # Clean up any existing hooks
         self.hooks = []
+        
         for name, param in model.named_parameters():
             if name in masks:
                 mask = masks[name]
-                # This hook will zero gradients for pruned weights
-                hook = param.register_hook(lambda grad, mask=mask: grad * mask if grad is not None else grad)
+                # Register hook that zeros gradients for pruned weights
+                hook = param.register_hook(lambda grad, m=mask: grad * m if grad is not None else grad)
                 self.hooks.append(hook)
     
     def remove_hooks(self):
-        """Remove gradient hooks"""
-        for hook in getattr(self, 'hooks', []):
+        """Remove all gradient hooks"""
+        for hook in self.hooks:
             hook.remove()
         self.hooks = []
     
     def train_epoch(self, model: nn.Module, dataloader: DataLoader, optimizer: Any,
-                   scheduler: Any, masks: Optional[Dict[str, torch.Tensor]] = None) -> float:
-        """Train for one epoch with proper masking"""
+                   scheduler: Any, masks: Optional[Dict[str, torch.Tensor]] = None,
+                   enforce_masks: bool = True) -> float:
+        """Train for one epoch with optional mask enforcement"""
         model.train()
         total_loss = 0.0
         num_batches = 0
         
-        # Register gradient hooks BEFORE training
-        if masks:
-            self.register_gradient_hooks(model, masks)
-        
-        progress_bar = tqdm(dataloader, desc="Training")
+        progress_bar = tqdm(dataloader, desc="Training", leave=False)
         
         for batch_idx, batch in enumerate(progress_bar):
             batch = {k: v.to(self.config.device) if torch.is_tensor(v) else v 
@@ -646,8 +628,8 @@ class Trainer:
                     scheduler.step()
                     optimizer.zero_grad()
                     
-                    # Enforce masks after optimizer step (redundant but ensures correctness)
-                    if masks:
+                    # Enforce masks after optimizer step if requested
+                    if enforce_masks and masks:
                         self.enforce_masks(model, masks)
             else:
                 outputs = model(input_ids=batch['input_ids'], 
@@ -664,26 +646,23 @@ class Trainer:
                     scheduler.step()
                     optimizer.zero_grad()
                     
-                    # Enforce masks after optimizer step
-                    if masks:
+                    # Enforce masks after optimizer step if requested
+                    if enforce_masks and masks:
                         self.enforce_masks(model, masks)
             
             total_loss += loss.item()
             num_batches += 1
             progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
         
-        # Remove hooks after training
-        if masks:
-            self.remove_hooks()
-        
         return total_loss / max(num_batches, 1)
     
     @staticmethod
     def enforce_masks(model: nn.Module, masks: Dict[str, torch.Tensor]):
-        """Enforce pruning masks"""
-        for name, param in model.named_parameters():
-            if name in masks:
-                param.data.mul_(masks[name])
+        """Enforce pruning masks on model parameters"""
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name in masks:
+                    param.data.mul_(masks[name])
     
     def evaluate(self, model: nn.Module, dataloader: DataLoader) -> Dict[str, float]:
         """Evaluate model"""
@@ -694,7 +673,7 @@ class Trainer:
         num_batches = 0
         
         with torch.no_grad():
-            for batch in tqdm(dataloader, desc="Evaluating"):
+            for batch in tqdm(dataloader, desc="Evaluating", leave=False):
                 batch = {k: v.to(self.config.device) if torch.is_tensor(v) else v 
                         for k, v in batch.items()}
                 
@@ -747,7 +726,7 @@ class Trainer:
         
         return zero_params / max(total_params, 1)
 
-# ============= VERIFICATION UTILITIES =============
+# ============= TRAINING UTILITIES =============
 
 def verify_sparsity_maintained(model: nn.Module, target_sparsity: float, 
                                tolerance: float = 0.01) -> Tuple[bool, float]:
@@ -758,47 +737,55 @@ def verify_sparsity_maintained(model: nn.Module, target_sparsity: float,
 
 def train_pruned_model_with_verification(model, masks, train_loader, eval_loader, 
                                          config, trainer, logger, target_sparsity):
-    """Train pruned model with sparsity verification"""
+    """Train pruned model with proper gradient masking and verification"""
     
-    # Setup optimizer with smaller learning rate for pruned models
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate * 0.5)
+    # Setup optimizer
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     num_training_steps = len(train_loader) * config.num_epochs
     num_warmup_steps = int(num_training_steps * config.warmup_ratio)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
     
-    best_metrics = None
-    best_correlation = -1.5
+    # Register gradient hooks ONCE at the beginning
+    trainer.register_gradient_hooks(model, masks)
     
-    for epoch in range(config.num_epochs):
-        logger.info(f"Epoch {epoch + 1}/{config.num_epochs}")
-        
-        # Verify sparsity before training
-        is_maintained, actual = verify_sparsity_maintained(model, target_sparsity)
-        if not is_maintained:
-            logger.warning(f"Sparsity drift detected! Target: {target_sparsity:.2%}, Actual: {actual:.2%}")
-            # Re-enforce masks
-            trainer.enforce_masks(model, masks)
-        
-        # Train with gradient hooks
-        loss = trainer.train_epoch(model, train_loader, optimizer, scheduler, masks)
-        
-        # Verify sparsity after training
-        is_maintained, actual = verify_sparsity_maintained(model, target_sparsity)
-        logger.info(f"Post-epoch sparsity: {actual:.2%} (target: {target_sparsity:.2%})")
-        
-        # Evaluate
-        metrics = trainer.evaluate(model, eval_loader)
-        
-        # Track best model
-        if metrics['correlation'] > best_correlation:
-            best_correlation = metrics['correlation']
-            best_metrics = metrics.copy()
-        
-        logger.info(f"Loss: {loss:.4f}, Correlation: {metrics['correlation']:.4f}")
+    best_metrics = None
+    best_correlation = -1.0
+    
+    try:
+        for epoch in range(config.num_epochs):
+            logger.info(f"Epoch {epoch + 1}/{config.num_epochs}")
+            
+            # Verify sparsity before training
+            is_maintained, actual = verify_sparsity_maintained(model, target_sparsity)
+            if not is_maintained:
+                logger.warning(f"Sparsity drift! Target: {target_sparsity:.2%}, Actual: {actual:.2%}")
+                trainer.enforce_masks(model, masks)
+            
+            # Train (hooks are already registered, don't pass masks to avoid double registration)
+            loss = trainer.train_epoch(model, train_loader, optimizer, scheduler, 
+                                      masks=masks, enforce_masks=True)
+            
+            # Verify sparsity after training
+            is_maintained, actual = verify_sparsity_maintained(model, target_sparsity)
+            logger.info(f"Post-epoch sparsity: {actual:.2%} (target: {target_sparsity:.2%})")
+            
+            # Evaluate
+            metrics = trainer.evaluate(model, eval_loader)
+            
+            # Track best model
+            if metrics['correlation'] > best_correlation:
+                best_correlation = metrics['correlation']
+                best_metrics = metrics.copy()
+            
+            logger.info(f"Loss: {loss:.4f}, Correlation: {metrics['correlation']:.4f}")
+    
+    finally:
+        # Clean up hooks
+        trainer.remove_hooks()
     
     return best_metrics, best_correlation
 
-# ============= MAIN EXPERIMENT =============
+# ============= PHASE 1 LOADING =============
 
 def load_phase1_results(phase1_dir: Path, logger: Logger) -> Tuple[Dict[str, float], List[Dict]]:
     """Load Phase 1 results"""
@@ -816,6 +803,15 @@ def load_phase1_results(phase1_dir: Path, logger: Logger) -> Tuple[Dict[str, flo
                         importance_scores = data['importance_scores']
                     else:
                         importance_scores = data
+                
+                # Normalize scores to 0-1 range if needed
+                if importance_scores:
+                    max_score = max(importance_scores.values())
+                    min_score = min(importance_scores.values())
+                    if max_score > min_score:
+                        for key in importance_scores:
+                            importance_scores[key] = (importance_scores[key] - min_score) / (max_score - min_score)
+                
                 logger.info(f"Loaded {len(importance_scores)} importance scores")
         except Exception as e:
             logger.warning(f"Failed to load importance scores: {e}")
@@ -832,14 +828,16 @@ def load_phase1_results(phase1_dir: Path, logger: Logger) -> Tuple[Dict[str, flo
     
     return importance_scores, circuits
 
+# ============= MAIN EXPERIMENT =============
+
 def run_experiment(config: ExperimentConfig):
-    """Run complete pruning experiment with enhanced fixes"""
+    """Run complete pruning experiment"""
     
     # Initialize logger
-    logger = Logger(config.output_dir / 'logs', 'pruning_experiment_enhanced')
+    logger = Logger(config.output_dir / 'logs', 'pruning_fixed')
     
     logger.info("="*60)
-    logger.info("ENHANCED PRUNING EXPERIMENT WITH CRITICAL FIXES")
+    logger.info("FIXED PRUNING EXPERIMENT")
     logger.info("="*60)
     logger.info(f"Configuration:\n{json.dumps(asdict(config), indent=2, default=str)}")
     
@@ -893,9 +891,9 @@ def run_experiment(config: ExperimentConfig):
     # Initialize trainer
     trainer = Trainer(config, logger)
     
-    # Train strong baseline model
+    # Train baseline model
     logger.info("\n" + "="*60)
-    logger.info("TRAINING STRONG BASELINE MODEL")
+    logger.info("TRAINING BASELINE MODEL")
     logger.info("="*60)
     
     with timer("Baseline training", logger):
@@ -913,7 +911,6 @@ def run_experiment(config: ExperimentConfig):
             logger.info(f"\nBaseline Epoch {epoch + 1}/{config.baseline_epochs}")
             loss = trainer.train_epoch(baseline_model, train_loader, optimizer, scheduler)
             
-            # Evaluate every 2 epochs
             if epoch % 2 == 1 or epoch == config.baseline_epochs - 1:
                 metrics = trainer.evaluate(baseline_model, eval_loader)
                 logger.info(f"Epoch {epoch+1}: Loss={loss:.4f}, Correlation={metrics['correlation']:.4f}")
@@ -977,9 +974,9 @@ def run_experiment(config: ExperimentConfig):
                 
                 # Verify sparsity
                 actual_sparsity = trainer.calculate_sparsity(model)
-                logger.info(f"Actual sparsity: {actual_sparsity:.2%}")
+                logger.info(f"Actual sparsity after pruning: {actual_sparsity:.2%}")
                 
-                # Fine-tune pruned model with verification
+                # Fine-tune pruned model
                 best_metrics, best_correlation = train_pruned_model_with_verification(
                     model, masks, train_loader, eval_loader, 
                     config, trainer, logger, sparsity
@@ -1008,13 +1005,12 @@ def run_experiment(config: ExperimentConfig):
                 all_results['methods'][method][sparsity] = {'error': str(e)}
             
             finally:
-                # Clean up
                 if 'model' in locals():
                     del model
                 cleanup_memory()
     
     # Save results
-    results_path = config.output_dir / 'metrics' / 'pruning_results_enhanced.json'
+    results_path = config.output_dir / 'metrics' / 'pruning_results_fixed.json'
     with open(results_path, 'w') as f:
         json.dump(all_results, f, indent=2, default=str)
     
