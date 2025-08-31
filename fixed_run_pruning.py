@@ -43,8 +43,8 @@ class ExperimentConfig:
     num_epochs: int = 5
     baseline_epochs: int = 6
     batch_size: int = 16
-    learning_rate: float = 5e-5
-    baseline_lr: float = 5e-5
+    learning_rate: float = 2e-5
+    baseline_lr: float = 6e-5
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
@@ -66,7 +66,7 @@ class ExperimentConfig:
         if self.pruning_methods is None:
             self.pruning_methods = ['magnitude','sma', 'l0', 'movement','random' ]
         if self.protect_layers is None:
-            self.protect_layers = [2, 3, 4, 5, 6, 7]
+            self.protect_layers = [1, 2, 3, 4, 5, 6]
         
         # Create output directories
         self.output_dir.mkdir(exist_ok=True, parents=True)
