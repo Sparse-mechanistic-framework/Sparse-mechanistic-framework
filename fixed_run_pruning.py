@@ -62,9 +62,9 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.71]
+            self.target_sparsities = [0.3, 0.5, 0.728]
         if self.pruning_methods is None:
-            self.pruning_methods = ['random', 'sma', 'l0', 'movement', 'magnitude']
+            self.pruning_methods = ['magnitude', 'sma', 'l0', 'movement', 'random']
         if self.protect_layers is None:
             self.protect_layers = [2, 3, 4, 5, 6, 7]
         
@@ -354,108 +354,134 @@ class PruningMethods:
     
     @staticmethod
     def random_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """Random pruning with exact sparsity"""
+        """Random pruning - original implementation (baseline)"""
         masks = {}
-        weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        if not weights_list:
-            return masks
-        
-        # Generate random scores for each parameter
-        random_scores = []
-        for name, param in param_info:
-            scores = torch.rand_like(param)
-            random_scores.append(scores.flatten())
-        
-        # Get exact threshold
-        threshold = PruningMethods.get_exact_threshold(random_scores, sparsity)
-        
-        # Apply masks
-        for i, (name, param) in enumerate(param_info):
-            scores_shape = random_scores[i][:param.numel()].reshape(param.shape)
-            mask = (scores_shape > threshold).float()
-            masks[name] = mask
-            param.data.mul_(mask)
+        for name, param in model.named_parameters():
+            if 'weight' in name and param.dim() >= 2:
+                if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
+                    # Original: randomly select weights to prune
+                    mask = torch.bernoulli(torch.ones_like(param) * (1 - sparsity))
+                    masks[name] = mask.to(device)
+                    param.data.mul_(mask)
         
         return masks
     
     @staticmethod
     def magnitude_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """Magnitude pruning with exact sparsity"""
+        """Magnitude pruning - Han et al. (2015) original implementation
+        Prunes weights with smallest absolute values globally"""
         masks = {}
-        weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        if not weights_list:
+        # Collect all weights
+        all_weights = []
+        weight_shapes = []
+        weight_names = []
+        
+        for name, param in model.named_parameters():
+            if 'weight' in name and param.dim() >= 2:
+                if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
+                    all_weights.append(param.abs().flatten())
+                    weight_shapes.append(param.shape)
+                    weight_names.append(name)
+        
+        if not all_weights:
             return masks
         
-        # Get exact threshold based on magnitudes
-        threshold = PruningMethods.get_exact_threshold(weights_list, sparsity)
+        # Concatenate all weights
+        all_weights_concat = torch.cat(all_weights)
+        
+        # Find threshold - original paper uses global threshold
+        num_params_to_prune = int(all_weights_concat.numel() * sparsity)
+        if num_params_to_prune > 0:
+            sorted_weights, _ = torch.sort(all_weights_concat)
+            threshold = sorted_weights[num_params_to_prune]
+        else:
+            threshold = 0.0
         
         # Apply masks
-        for name, param in param_info:
-            mask = (param.abs() > threshold).float()
-            masks[name] = mask
-            param.data.mul_(mask)
+        for name, param in model.named_parameters():
+            if name in weight_names:
+                mask = (param.abs() > threshold).float()
+                masks[name] = mask.to(device)
+                param.data.mul_(mask)
         
         return masks
     
     @staticmethod
     def l0_pruning(model: nn.Module, sparsity: float, device: str = 'cuda') -> Dict[str, torch.Tensor]:
-        """L0 regularization pruning with adaptive noise"""
+        """L0 regularization pruning - Louizos et al. (2018) original implementation
+        Approximated for one-shot pruning using hard concrete distribution"""
         masks = {}
-        weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        if not weights_list:
-            return masks
+        # Parameters from the original paper
+        temperature = 2.0 / 3.0  # Temperature for concrete distribution
+        gamma = -0.1  # Stretch parameter
+        zeta = 1.1    # Stretch parameter
         
-        # Add adaptive stochastic noise for L0
-        noisy_weights = []
-        for name, param in param_info:
-            # Adaptive noise based on parameter statistics
-            param_std = param.abs().std()
-            noise_scale = param_std * 0.08  # 10% of std dev
-            importance = param.abs() + torch.randn_like(param) * noise_scale
-            noisy_weights.append(importance.flatten())
-        
-        # Get exact threshold
-        threshold = PruningMethods.get_exact_threshold(noisy_weights, sparsity)
-        
-        # Apply masks
-        for i, (name, param) in enumerate(param_info):
-            importance_shape = noisy_weights[i][:param.numel()].reshape(param.shape)
-            mask = (importance_shape > threshold).float()
-            masks[name] = mask
-            param.data.mul_(mask)
+        for name, param in model.named_parameters():
+            if 'weight' in name and param.dim() >= 2:
+                if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
+                    # Initialize log alpha based on weight magnitudes
+                    # Higher magnitude weights should have higher log alpha (less likely to prune)
+                    weight_magnitude = param.abs()
+                    normalized_magnitude = (weight_magnitude - weight_magnitude.min()) / (weight_magnitude.max() - weight_magnitude.min() + 1e-8)
+                    
+                    # Map to log alpha range that gives desired sparsity
+                    # log_alpha controls the dropout rate in hard concrete
+                    log_alpha = torch.log(normalized_magnitude + 1e-8) - torch.log(1 - normalized_magnitude + 1e-8)
+                    
+                    # Sample from hard concrete distribution
+                    u = torch.rand_like(param).clamp(1e-8, 1 - 1e-8)
+                    s = torch.sigmoid((torch.log(u) - torch.log(1 - u) + log_alpha) / temperature)
+                    
+                    # Stretch and rectify
+                    s_bar = s * (zeta - gamma) + gamma
+                    mask = torch.clamp(s_bar, 0, 1)
+                    
+                    # Apply threshold to achieve target sparsity
+                    mask_flat = mask.flatten()
+                    k = int(mask_flat.numel() * (1 - sparsity))
+                    threshold = torch.topk(mask_flat, k, largest=True)[0][-1]
+                    mask = (mask >= threshold).float()
+                    
+                    masks[name] = mask.to(device)
+                    param.data.mul_(mask)
         
         return masks
     
     @staticmethod
     def movement_pruning(model: nn.Module, sparsity: float, dataloader: DataLoader,
                         device: str = 'cuda', logger: Optional[Logger] = None) -> Dict[str, torch.Tensor]:
-        """FIXED Movement pruning - measures movement from current trained state"""
+        """Movement pruning - Sanh et al. (2020) original implementation
+        Prunes weights based on movement during fine-tuning
+        Movement score: S = W_final * (W_final - W_init)"""
         masks = {}
-        weights_list, param_info = PruningMethods.get_weights_for_pruning(model)
         
-        if not weights_list or dataloader is None:
+        if dataloader is None:
             # Fallback to magnitude if no dataloader
             return PruningMethods.magnitude_pruning(model, sparsity, device)
         
-        # Store initial weights (current trained state - NOT random!)
+        # Store initial weights (pretrained state)
         initial_weights = {}
         for name, param in model.named_parameters():
             if 'weight' in name and param.dim() >= 2:
                 if not any(skip in name for skip in ['embeddings', 'LayerNorm', 'layer_norm']):
                     initial_weights[name] = param.data.clone()
         
-        # Brief fine-tuning to capture movement
+        # Fine-tune briefly to get movement
         model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)  # Original paper uses AdamW
         
         if logger:
-            logger.info("Computing movement scores...")
+            logger.info("Movement pruning: fine-tuning to compute movement scores...")
         
-        for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= 10:  # Limited iterations
+        # Fine-tune for a few steps (original paper uses more, but we use fewer for efficiency)
+        num_movement_steps = min(100, len(dataloader))  # Original uses full epoch
+        step_count = 0
+        
+        for batch in dataloader:
+            if step_count >= num_movement_steps:
                 break
             
             batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
@@ -464,34 +490,48 @@ class PruningMethods:
             if logits.dim() == 0:
                 logits = logits.unsqueeze(0)
             loss = F.mse_loss(logits, batch['labels'])
+            
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
+            step_count += 1
         
-        # Compute movement scores (how much weights moved and in which direction)
-        movement_scores = []
-        for name, param in param_info:
+        # Compute movement scores: S = W_final * (W_final - W_init)
+        # Original paper: positive scores = moving away from zero (keep)
+        #                 negative scores = moving toward zero (prune)
+        all_scores = []
+        score_dict = {}
+        
+        for name, param in model.named_parameters():
             if name in initial_weights:
-                # Movement = magnitude of change * sign alignment
-                # Weights that move away from zero are important
-                movement = (param.data - initial_weights[name]) * param.data.sign()
-                movement_scores.append(movement.flatten())
-            else:
-                # Fallback to magnitude
-                movement_scores.append(param.abs().flatten())
+                # Movement score from original paper
+                movement_score = param.data * (param.data - initial_weights[name])
+                score_dict[name] = movement_score
+                all_scores.append(movement_score.flatten())
         
-        # Get threshold
-        threshold = PruningMethods.get_exact_threshold(movement_scores, sparsity)
+        if not all_scores:
+            return masks
         
-        # Restore original weights and apply masks
-        for i, (name, param) in enumerate(param_info):
+        # Find threshold for target sparsity
+        all_scores_concat = torch.cat(all_scores)
+        num_params_to_prune = int(all_scores_concat.numel() * sparsity)
+        if num_params_to_prune > 0:
+            sorted_scores, _ = torch.sort(all_scores_concat)
+            threshold = sorted_scores[num_params_to_prune]
+        else:
+            threshold = 0.0
+        
+        # Apply masks and restore original weights
+        for name, param in model.named_parameters():
             if name in initial_weights:
-                param.data = initial_weights[name]  # Restore original trained weights
-            
-            movement_shape = movement_scores[i][:param.numel()].reshape(param.shape)
-            mask = (movement_shape > threshold).float()
-            masks[name] = mask
-            param.data.mul_(mask)
+                # Create mask based on movement scores
+                mask = (score_dict[name] > threshold).float()
+                masks[name] = mask.to(device)
+                
+                # IMPORTANT: Restore initial weights then apply mask
+                # This is key to movement pruning - we prune from the original weights
+                param.data = initial_weights[name]
+                param.data.mul_(mask)
         
         return masks
     
@@ -542,7 +582,7 @@ class PruningMethods:
             
             # Apply general layer protection (moderate)
             elif layer_idx in protect_layers:
-                importance_multiplier *= 1.3  # 1.5x for protected layers
+                importance_multiplier *= 1.5  # 1.5x for protected layers
             
             # Apply adaptive protection based on sparsity level
             if sparsity >= 0.7:
