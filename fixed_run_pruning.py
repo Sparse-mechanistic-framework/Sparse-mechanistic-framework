@@ -62,7 +62,7 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.728]
+            self.target_sparsities = [0.3, 0.5, 0.67]
         if self.pruning_methods is None:
             self.pruning_methods = ['magnitude', 'sma', 'l0', 'movement', 'random']
         if self.protect_layers is None:
