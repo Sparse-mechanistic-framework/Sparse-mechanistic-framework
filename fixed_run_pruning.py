@@ -62,9 +62,9 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.728]
+            self.target_sparsities = [0.3, 0.5, 0.71]
         if self.pruning_methods is None:
-            self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
+            self.pruning_methods = ['random', 'sma', 'l0', 'movement', 'magnitude']
         if self.protect_layers is None:
             self.protect_layers = [2, 3, 4, 5, 6, 7]
         
@@ -413,7 +413,7 @@ class PruningMethods:
         for name, param in param_info:
             # Adaptive noise based on parameter statistics
             param_std = param.abs().std()
-            noise_scale = param_std * 0.1  # 10% of std dev
+            noise_scale = param_std * 0.08  # 10% of std dev
             importance = param.abs() + torch.randn_like(param) * noise_scale
             noisy_weights.append(importance.flatten())
         
@@ -449,13 +449,13 @@ class PruningMethods:
         
         # Brief fine-tuning to capture movement
         model.train()
-        optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-5)
         
         if logger:
             logger.info("Computing movement scores...")
         
         for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= 20:  # Limited iterations
+            if batch_idx >= 10:  # Limited iterations
                 break
             
             batch = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
@@ -542,7 +542,7 @@ class PruningMethods:
             
             # Apply general layer protection (moderate)
             elif layer_idx in protect_layers:
-                importance_multiplier *= 1.5  # 1.5x for protected layers
+                importance_multiplier *= 1.3  # 1.5x for protected layers
             
             # Apply adaptive protection based on sparsity level
             if sparsity >= 0.7:
