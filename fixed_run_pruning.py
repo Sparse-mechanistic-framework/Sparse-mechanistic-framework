@@ -64,7 +64,7 @@ class ExperimentConfig:
         if self.target_sparsities is None:
             self.target_sparsities = [0.3, 0.5, 0.728]
         if self.pruning_methods is None:
-            self.pruning_methods = ['random', 'magnitude', 'l0', 'movement', 'sma']
+            self.pruning_methods = ['magnitude','sma', 'l0', 'movement','random' ]
         if self.protect_layers is None:
             self.protect_layers = [2, 3, 4, 5, 6, 7]
         
