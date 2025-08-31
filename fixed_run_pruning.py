@@ -43,7 +43,7 @@ class ExperimentConfig:
     num_epochs: int = 5
     baseline_epochs: int = 6
     batch_size: int = 16
-    learning_rate: float = 3e-5
+    learning_rate: float = 5e-5
     baseline_lr: float = 5e-5
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
@@ -62,7 +62,7 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.728]
+            self.target_sparsities = [0.3, 0.5, 0.68]
         if self.pruning_methods is None:
             self.pruning_methods = ['magnitude','sma', 'l0', 'movement','random' ]
         if self.protect_layers is None:
