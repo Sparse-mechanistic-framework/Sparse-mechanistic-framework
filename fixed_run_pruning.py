@@ -66,7 +66,7 @@ class ExperimentConfig:
         if self.pruning_methods is None:
             self.pruning_methods = ['magnitude', 'sma', 'l0', 'movement', 'random']
         if self.protect_layers is None:
-            self.protect_layers = [2, 3, 4, 5, 6, 7]
+            self.protect_layers = [1, 2, 3, 4, 5, 6, 7]
         
         # Create output directories
         self.output_dir.mkdir(exist_ok=True, parents=True)
