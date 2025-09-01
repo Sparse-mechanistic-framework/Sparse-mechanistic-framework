@@ -571,12 +571,12 @@ class PruningMethods:
                 if f'layer_{layer_idx}' in key or f'layer.{layer_idx}' in key:
                     # Use actual importance score (assumed to be 0-1)
                     # Higher importance = higher multiplier
-                    importance_multiplier = 1.0 + score * 2.0  # Can go up to 3x
+                    importance_multiplier = 1.0 + score * 1.0  # Can go up to 3x
                     break
             
             # Apply circuit protection (strongest)
             if layer_idx in circuit_layers:
-                importance_multiplier *= 3.0  # Triple importance for circuit layers
+                importance_multiplier *= 1.5  # Triple importance for circuit layers
                 if logger:
                     logger.info(f"  Circuit layer {layer_idx} protected with 3x multiplier")
             
