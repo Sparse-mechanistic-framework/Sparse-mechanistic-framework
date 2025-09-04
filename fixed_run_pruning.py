@@ -40,7 +40,7 @@ class ExperimentConfig:
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     target_sparsities: List[float] = None
     pruning_methods: List[str] = None
-    num_epochs: int = 5
+    num_epochs: int = 6
     baseline_epochs: int = 4
     batch_size: int = 16
     learning_rate: float = 2e-5
