@@ -48,7 +48,7 @@ class ExperimentConfig:
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
-    max_samples: int = 11400
+    max_samples: int = 11200
     dataset_split: str = 'test'
     gradient_accumulation_steps: int = 1
     fp16: bool = True
