@@ -48,7 +48,7 @@ class ExperimentConfig:
     warmup_ratio: float = 0.1
     output_dir: Path = Path('./pruning_results_fixed')
     phase1_dir: Path = Path('./phase1_results')
-    max_samples: int = 11200
+    max_samples: int = 11500
     dataset_split: str = 'test'
     gradient_accumulation_steps: int = 1
     fp16: bool = True
@@ -62,7 +62,7 @@ class ExperimentConfig:
     def __post_init__(self):
         """Initialize defaults and validate configuration"""
         if self.target_sparsities is None:
-            self.target_sparsities = [0.3, 0.5, 0.71]
+            self.target_sparsities = [0.3, 0.5, 0.72]
         if self.pruning_methods is None:
             self.pruning_methods = ['magnitude','sma', 'l0', 'movement','random' ]
         if self.protect_layers is None:
