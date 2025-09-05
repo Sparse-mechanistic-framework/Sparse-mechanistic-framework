@@ -21,6 +21,13 @@ Our SMA framework achieves superior performance retention compared to baseline p
 
 **Key Finding**: SMA preserves 98% of baseline performance while removing half the parameters, outperforming magnitude pruning by 2.6 percentage points.
 
+### Circuit Discovery
+- **NFCorpus**: 24 circuits (nutrition/health)
+- **TREC-COVID**: 192 circuits (COVID-19 literature)  
+- **BRIGHT**: 192 circuits (BioASQ biomedical Q&A)
+- **Three-way Overlap**: 67% circuit consistency
+- **Domain Patterns**: BRIGHT shows balanced early-late processing, TREC-COVID peaks at layer 9
+
 ### Circuit Discovery Results
 
 <table>
@@ -92,16 +99,6 @@ Layer 10: ████████░░░░░░░░░░░░ 0.423
 
 *Movement pruning implementation issues detected  
 †SMA shows instability at extreme sparsity
-
-### Cross-Dataset Generalization
-
-| Dataset | Samples | SMA@50% | Magnitude@50% | Improvement |
-|---------|---------|---------|---------------|-------------|
-| NFCorpus (Medical) | 11,400 | 98.02% | 95.40% | +2.62% |
-| TREC-COVID* | - | - | - | - |
-| MS-MARCO* | - | - | - | - |
-
-*Experiments in progress
 
 ### Statistical Validation
 
